@@ -743,4 +743,615 @@ src/
 
 ---
 
-*Generated: 2026-05-20 — Homi 1.0 Room Service Design Report*
+## 4. Đảm Bảo Toàn Vẹn Dữ Liệu (Data Integrity)
+
+### 4.1 Mô Hình Nhiều Tầng Bảo Vệ
+
+```
+Tầng 1: API Layer         → Validation DTO, Idempotency Key, Rate Limiting
+Tầng 2: Database Layer   → CHECK Constraints, FK, NOT NULL, UNIQUE, Partial Index
+Tầng 3: Concurrency      → Redis SETNX, SELECT FOR UPDATE, Advisory Locks, Optimistic Lock
+Tầng 4: Business Logic   → Atomic UPDATE Formula, State Transition Guard, buffer_minutes
+Tầng 5: Event Layer      → Outbox Pattern, Consumer Idempotency, DLQ + Retry
+Tầng 6: Audit Trail      → updated_at, deleted_at, AUDIT_LOGS
+```
+
+---
+
+### 4.1 Trạng thái Phòng — Vòng đời 7 Trạng thái
+
+Hệ thống Homi 1.0 định nghĩa **7 trạng thái phòng**, mỗi trạng thái có ý nghĩa nghiệp vụ riêng biệt và chuyển đổi theo quy tắc nghiêm ngặt.
+
+#### 4.1.1 Bảng mô tả 7 trạng thái
+
+| Trạng thái | Mã | Mô tả kỹ thuật | Visible với guest |
+|------------|-----|----------------|--------------------|
+| **Sẵn sàng** | `AVAILABLE` | Phòng trống, sạch sẽ, có thể đặt ngay | ✅ Yes |
+| **Chờ thanh toán** | `PENDING` | Đã giữ chỗ (PENDING_PAYMENT) chờ thanh toán VietQR | ❌ No |
+| **Đã đặt** | `BOOKED` | Đã thanh toán thành công, chưa check-in | ❌ No |
+| **Đang ở** | `OCCUPIED` | Guest đã check-in, đang sử dụng phòng | ❌ No |
+| **Đang dọn dẹp** | `CLEANING` | Guest checkout xong, chờ housekeeping hoàn tất | ❌ No |
+| **Đóng cửa** | `CLOSED` | Admin đóng phòng thủ công (nghỉ phép, sửa chữa...) | ❌ No |
+| **Bảo trì** | `MAINTENANCE` | Phát hiện hư hỏng cần sửa chữa | ❌ No |
+
+**Quy tắc quan trọng:** Chỉ trạng thái `AVAILABLE` mới hiển thị cho guest và có thể nhận đặt phòng mới.
+
+#### 4.1.2 Quy tắc chuyển đổi trạng thái (State Transition Rules)
+
+Mỗi chuyển đổi trạng thái phải tuân theo ma trận bên dưới. Các chuyển đổi không được liệt kê = **bị cấm**.
+
+```
+AVAILABLE  → PENDING    : Guest nhấn "Thanh toán" (booking submitted)
+AVAILABLE  → CLOSED     : Admin đóng phòng thủ công
+AVAILABLE  → MAINTENANCE: Phát hiện vấn đề kỹ thuật
+AVAILABLE  → [*]        : Xóa phòng (soft delete)
+
+PENDING    → AVAILABLE  : Thanh toán thất bại / timeout (10 phút)
+PENDING    → BOOKED     : Thanh toán thành công
+PENDING    → AVAILABLE  : Retry idempotency detected
+
+BOOKED     → OCCUPIED   : Guest nhấn "Check-in"
+BOOKED     → CANCELLED   : Guest hủy trước check-in
+BOOKED     → AVAILABLE  : Booking expired (không check-in sau 24h)
+BOOKED     → CLEANING   : Admin/hệ thống hủy sau khi guest đã ở
+
+OCCUPIED   → CLEANING   : Guest nhấn "Check-out"
+OCCUPIED   → CANCELLED   : Khẩn cấp (emergency)
+
+CLEANING   → AVAILABLE  : Housekeeping hoàn tất
+CLEANING   → MAINTENANCE: Phát hiện hư hỏng khi dọn phòng
+
+CLOSED     → AVAILABLE  : Admin mở lại phòng
+CLOSED     → MAINTENANCE: Phát hiện vấn đề khi đóng
+CLOSED     → [*]        : Xóa phòng
+
+MAINTENANCE→ AVAILABLE  : Sửa chữa hoàn tất
+MAINTENANCE→ CLEANING   : Sửa nhanh xong, chỉ cần dọn dẹp
+```
+
+#### 4.1.3 Mô hình DAILY — Check-out Timeline
+
+Với thuê theo ngày, mỗi ngày chỉ có **một booking**. Chu kỳ đơn giản:
+
+```
+14:00 Check-in ──[OCCUPIED]── 12:00 Check-out ──[CLEANING 90m]── 13:30 Available
+```
+
+**Công thức tính available time (DAILY):**
+```
+available_time = checkout_time + buffer_minutes
+```
+
+**Ví dụ:**
+- Checkout: 12:00
+- buffer_minutes: 90 (1 tiếng rưỡi)
+- Available: 13:30
+
+#### 4.1.4 Mô hình HOURLY — Check-out Timeline (Phức tạp)
+
+Với thuê theo giờ, **một ngày có thể có nhiều booking**. Mỗi checkout tạo ra một buffer riêng, và các buffer có thể **chồng lấn**.
+
+**Ví dụ một ngày phức tạp:**
+
+```
+08:00-12:00  Booking A ──[CLEANING 30m]── 12:30 ── Booking B ──[CLEANING 30m]── 17:00 ── Booking C ──[CLEANING 30m]── 20:30
+                                                        ↑
+                                                    Walk-in
+                                                    16:30-20:00
+```
+
+**Công thức tính available time (HOURLY):**
+```
+available_time = last_checkout_time + buffer_minutes
+```
+
+**Thuật toán tính tất cả khe giờ trống trong ngày:**
+
+```typescript
+function calculateHourlySlots(
+  roomId: string,
+  date: string,
+  checkouts: CheckoutEvent[],
+  bufferMinutes: number
+): HourlySlot[] {
+  const slots: HourlySlot[] = [];
+
+  // Sắp xếp checkout theo thời gian
+  const sorted = checkouts.sort((a, b) =>
+    a.checkoutTime.localeCompare(b.checkoutTime));
+
+  // Slot 00:00 - first_checkout - buffer
+  const dayStart = `${date} 00:00:00`;
+  const firstAvailable = subtractMinutes(
+    sorted[0].checkoutTime, bufferMinutes);
+
+  if (firstAvailable > dayStart) {
+    slots.push({ start: dayStart, end: firstAvailable, status: 'AVAILABLE' });
+  }
+
+  // Tạo slot cho mỗi booking
+  sorted.forEach((checkout, i) => {
+    const bufferEnd = addMinutes(checkout.checkoutTime, bufferMinutes);
+
+    // Slot OCCUPIED
+    slots.push({
+      start: checkout.checkinTime,
+      end: checkout.checkoutTime,
+      status: 'OCCUPIED',
+      bookingId: checkout.bookingId,
+    });
+
+    // Slot CLEANING
+    slots.push({
+      start: checkout.checkoutTime,
+      end: bufferEnd,
+      status: 'CLEANING',
+      bookingId: checkout.bookingId,
+    });
+
+    // Slot AVAILABLE tiếp theo
+    const nextCheckout = sorted[i + 1]?.checkoutTime;
+    if (nextCheckout) {
+      const nextAvailable = subtractMinutes(nextCheckout, bufferMinutes);
+      if (bufferEnd < nextAvailable) {
+        slots.push({ start: bufferEnd, end: nextAvailable, status: 'AVAILABLE' });
+      }
+    } else {
+      // Sau booking cuối → available đến 23:59
+      slots.push({ start: bufferEnd, end: `${date} 23:59:59`, status: 'AVAILABLE' });
+    }
+  });
+
+  return slots;
+}
+```
+
+#### 4.1.5 So sánh DAILY vs HOURLY
+
+| Khía cạnh | DAILY | HOURLY |
+|-----------|-------|--------|
+| Số booking/ngày | 1 (hoặc 0) | Nhiều (1-24) |
+| Buffer tính toán | 1 lần/ngày | N lần (mỗi checkout) |
+| Partition key | `DATE` là đủ | Cần `(DATE, START_TIME)` |
+| Slot generation | Tự động khi tạo booking | Cron mỗi 15 phút hoặc event-driven |
+| Overlap check | 1 row/ngày, đơn giản | Nhiều row, cần kiểm tra từng khe |
+| Walk-in support | Không phổ biến | **Rất phổ biến** — slot trống giữa bookings |
+| Overnight booking | Không áp dụng | Cần tạo slots cho 2 ngày liền kề |
+
+#### 4.1.6 State Transition Guard — Bảo vệ Admin Status Change
+
+Khi Admin/Host thay đổi trạng thái phòng (VD: CLOSED), hệ thống phải kiểm tra **không có booking đang active**:
+
+```sql
+-- CHECK trước khi cho phép đóng phòng
+CREATE OR REPLACE FUNCTION fn_check_before_status_change()
+RETURNS TRIGGER AS $$
+DECLARE
+  active_bookings INT;
+BEGIN
+  IF NEW.status = 'CLOSED' AND OLD.status != 'CLOSED' THEN
+    SELECT COUNT(*) INTO active_bookings
+    FROM slot_bookings sb
+    JOIN room_availability ra ON ra.id = sb.availability_slot_id
+    WHERE ra.room_id = NEW.room_id
+      AND ra.date = NEW.date
+      AND sb.status IN ('PENDING_PAYMENT', 'CONFIRMED', 'CHECKED_IN');
+
+    IF active_bookings > 0 THEN
+      RAISE EXCEPTION 'Cannot close room: % active bookings exist', active_bookings;
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_room_status_guard
+BEFORE UPDATE ON room_availability
+FOR EACH ROW EXECUTE FUNCTION fn_check_before_status_change();
+```
+
+#### 4.1.7 Cron Job — Tự động chuyển CLEANING → AVAILABLE
+
+Vì `buffer_minutes` có thể kết thúc vào lúc **bất kỳ thời điểm nào** (không trùng với cron), cần chạy cron **mỗi 5 phút** để phát hiện các slot đã hết buffer:
+
+```typescript
+// Cron: every 5 minutes
+@Cron(CronExpression.EVERY_5_MINUTES)
+async releaseExpiredCleaningSlots() {
+  const now = new Date();
+
+  // Tìm tất cả slot đang CLEANING mà buffer đã hết
+  const expiredSlots = await this.prisma.$queryRaw<RoomAvailability[]>`
+    SELECT ra.* FROM room_availability ra
+    JOIN slot_bookings sb ON sb.availability_slot_id = ra.id
+    WHERE ra.status = 'CLEANING'
+      AND sb.checkout_time + (ra.buffer_minutes || ' minutes')::interval < ${now}
+  `;
+
+  for (const slot of expiredSlots) {
+    await this.prisma.$transaction(async (tx) => {
+      // Chuyển CLEANING → AVAILABLE
+      await tx.roomAvailability.update({
+        where: { id: slot.id },
+        data: {
+          status: 'AVAILABLE',
+          updatedAt: now,
+        },
+      });
+
+      // Gửi event cho OTA sync
+      await tx.roomBookingEvents.create({
+        data: {
+          eventType: 'CLEANING_COMPLETED',
+          roomId: slot.roomId,
+          slotId: slot.id,
+          payload: { previousStatus: 'CLEANING', newStatus: 'AVAILABLE' },
+          status: 'PENDING',
+        },
+      });
+    });
+
+    // Invalidate cache + push OTA
+    await this.cacheService.del(`availability:${slot.roomId}:${slot.date}`);
+    await this.otaSyncService.pushSlotUpdate(slot);
+  }
+}
+```
+
+#### 4.1.8 5 Edge Cases đặc biệt của HOURLY
+
+**1. Back-to-Back Booking (đặt liền):**
+- Guest A checkout 12:00. Guest B đã đặt từ 12:00.
+- Logic: `checkout + buffer <= next_booking_start` → không cần buffer, chuyển OCCUPIED ngay cho B.
+
+**2. Walk-in trong thời gian CLEANING:**
+- Phòng đang CLEANING 12:00-12:30. Walk-in đến 12:15 muốn đặt 12:30.
+- Logic: Nếu `now >= 12:00` → cho phép walk-in từ thời điểm hiện tại. Không cần đợi hết 30 phút buffer.
+
+**3. Overlapping Booking (đặt trùng giờ):**
+- Đã có booking 10:00-14:00. Guest mới đặt 12:00-16:00.
+- Logic: Kiểm tra tất cả slots trong khoảng 12:00-16:00. Phát hiện overlap → reject.
+
+**4. Extend Stay (kéo dài thời gian):**
+- Guest đặt 10:00-12:00, muốn kéo dài đến 14:00.
+- Logic: Kiểm tra slots 12:00-14:00. Nếu slot 13:00 bị booking khác giữ → chỉ offer đến 13:00.
+
+**5. Overnight HOURLY (qua đêm):**
+- Guest đặt 22:00 ngày 1 đến 06:00 ngày 2.
+- Logic: Tạo 2 partition rows — một cho ngày 1 (22:00-24:00), một cho ngày 2 (00:00-06:00). Tổng giá = sum của cả 2 slot.
+
+---
+
+### 4.2 Atomic UPDATE — Công Thức Chống Overbooking
+
+Đây là cơ chế ** quan trọng nhất** của hệ thống. Câu lệnh SQL đảm bảo không bao giờ xảy ra overbooking ngay cả khi 100k request đồng thời.
+
+```sql
+-- CÂU LỆNH NGUYÊN TỬ — chỉ tăng on_hold_units khi còn phòng trống
+UPDATE room_availability
+SET
+    on_hold_units = on_hold_units + 1,
+    version = version + 1,
+    updated_at = now()
+WHERE id = :slot_id
+  AND status = 'OPEN'
+  AND (total_units + overbooking_buffer - booked_units - on_hold_units) > 0;
+
+-- Nếu rows_affected = 0 → không còn phòng trống hoặc slot bị khóa
+-- Nếu rows_affected = 1 → hold thành công
+```
+
+**Tại sao phải là một câu UPDATE duy nhất?**
+- PostgreSQL thực thi atomic — không có race condition giữa CHECK và UPDATE
+- `WHERE` clause là một phần của UPDATE — không có khoảng trống giữa kiểm tra và ghi
+- `version = version + 1` đảm bảo optimistic locking là lớp bảo vệ thứ hai
+
+---
+
+### 4.3 CHECK Constraints — Ràng Buộc Cấp Database
+
+```sql
+-- Ngăn giá trị âm trong inventory
+ALTER TABLE room_availability ADD CONSTRAINT chk_non_negative_units
+    CHECK (
+        booked_units >= 0
+        AND on_hold_units >= 0
+        AND total_units > 0
+        AND booked_units + on_hold_units <= total_units + overbooking_buffer
+    );
+
+-- Ngăn cấu hình phòng không hợp lệ
+ALTER TABLE rooms ADD CONSTRAINT chk_rental_config
+    CHECK (
+        rental_type IN ('DAILY', 'HOURLY', 'BOTH')
+        AND min_hours >= 1
+        AND max_hours IS NULL OR max_hours >= min_hours
+        AND (hourly_price IS NULL OR hourly_price > 0)
+        AND base_price > 0
+    );
+
+-- Ngăn ngày trong quá khứ cho availability
+ALTER TABLE room_availability ADD CONSTRAINT chk_future_date
+    CHECK (date >= CURRENT_DATE);
+
+-- Ngăn booking với số khách vượt quá sức chứa
+ALTER TABLE room_slot_bookings ADD CONSTRAINT chk_guest_count
+    CHECK (guest_count <= (SELECT max_guests FROM rooms r JOIN room_availability ra ON ra.room_id = r.id WHERE ra.id = availability_id));
+```
+
+---
+
+### 4.4 Optimistic Locking — Phát Hiện Concurrent Modification
+
+```sql
+-- Thêm trường version vào room_availability
+ALTER TABLE room_availability ADD COLUMN version INT DEFAULT 1;
+
+-- Khi client đọc dữ liệu → client biết version hiện tại
+SELECT * FROM room_availability WHERE id = :id;
+-- → { ..., version: 5, ... }
+
+-- Khi client ghi → kiểm tra version chưa đổi
+UPDATE room_availability
+SET status = 'CLOSED', version = version + 1
+WHERE id = :id AND version = 5;
+-- rows_affected = 1 → thành công
+-- rows_affected = 0 → có người khác đã sửa → trả 409 Conflict
+```
+
+**Tại sao cần cả pessimistic AND optimistic locking?**
+
+| Tình huống | Pessimistic (SELECT FOR UPDATE) | Optimistic (version) |
+|-----------|----------------------------------|----------------------|
+| Giữ slot đặt phòng | **BẮT BUỘC** — ngăn race condition | Thêm vào để phát hiện concurrent update |
+| Cập nhật thông tin phòng | Không cần — đọc rồi ghi | **BẮT BUỘC** — nhiều admin có thể edit cùng lúc |
+| Multi-room booking | **Advisory lock** cho nhiều row | Không đủ cho multi-row |
+
+---
+
+### 4.5 Transactional Outbox — Đảm Bảo Event Không Bị Mất
+
+**Vấn đề:** Khi booking được confirm, Room Service cần (1) cập nhật DB VÀ (2) gửi event đến Kafka. Nếu Kafka fail sau khi DB commit → hệ thống inconsistent.
+
+**Giải pháp:** Ghi event vào bảng `room_booking_events` TRONG CÙNG transaction với data change. Relay process riêng biệt đọc và publish.
+
+```sql
+BEGIN TRANSACTION;
+    -- 1. Cập nhật availability
+    UPDATE room_availability
+    SET booked_units = booked_units + 1,
+        on_hold_units = on_hold_units - 1,
+        version = version + 1,
+        updated_at = now()
+    WHERE id = :slot_id;
+
+    -- 2. Cập nhật slot_booking
+    UPDATE room_slot_bookings
+    SET status = 'CONFIRMED', check_in_at = :check_in
+    WHERE availability_id = :slot_id AND external_booking_id = :booking_id;
+
+    -- 3. Ghi event VÀO CÙNG transaction
+    INSERT INTO room_booking_events
+        (aggregate_type, aggregate_id, event_type, payload, status, created_at)
+    VALUES
+        ('availability', :slot_id, 'ROOM_AVAILABILITY_CONFIRMED',
+         '{"booking_id": :booking_id, "room_id": :room_id}',
+         'PENDING', now());
+COMMIT;
+-- Transaction thành công: cả data change và event ghi cùng lúc hoặc cùng rollback
+```
+
+**Outbox Relay Process (BullMQ worker):**
+```typescript
+@Processor('outbox-relay')
+async processOutbox() {
+  const events = await this.prisma.roomBookingEvents.findMany({
+    where: { status: 'PENDING', retry_count: { lt: 5 } },
+    orderBy: { created_at: 'asc' },
+    take: 100,
+  });
+
+  for (const event of events) {
+    try {
+      await this.kafkaProducer.send({ topic: event.event_type, messages: [event.payload] });
+      await this.prisma.roomBookingEvents.update({
+        where: { id: event.id },
+        data: { status: 'PUBLISHED', published_at: new Date() },
+      });
+    } catch (error) {
+      await this.prisma.roomBookingEvents.update({
+        where: { id: event.id },
+        data: { status: 'FAILED', retry_count: { increment: 1 } },
+      });
+      // Alert Admin khi retry_count >= 5
+    }
+  }
+}
+```
+
+---
+
+### 4.6 Consumer Idempotency — Xử Lý Event Trùng Lặp
+
+Kafka/RabbitMQ có thể deliver event nhiều lần (at-least-once delivery). Consumer phải xử lý idempotent.
+
+```sql
+-- Bảng lưu event đã xử lý
+CREATE TABLE event_idempotency (
+    event_id UUID PRIMARY KEY,
+    processed_at TIMESTAMPTZ DEFAULT now(),
+    result JSONB
+);
+
+-- TTL: tự động xóa sau 7 ngày
+CREATE INDEX idx_event_idempotency_ttl
+    ON event_idempotency (processed_at)
+    WHERE processed_at < now() - INTERVAL '7 days';
+```
+
+```typescript
+async handleBookingConfirmed(event: BookingConfirmedEvent) {
+  // 1. Check đã xử lý chưa
+  const existing = await this.prisma.eventIdempotency.findUnique({
+    where: { event_id: event.id },
+  });
+  if (existing) return; // skip duplicate
+
+  // 2. Xử lý business logic
+  await this.prisma.$transaction([
+    this.prisma.roomSlotBookings.update({ ... }),
+    this.prisma.roomAvailability.update({ ... }),
+  ]);
+
+  // 3. Mark là đã xử lý
+  await this.prisma.eventIdempotency.create({
+    data: { event_id: event.id, result: { status: 'processed' } },
+  });
+}
+```
+
+---
+
+### 4.7 Soft Delete — Bảo Vệ Dữ Liệu Khỏi Xóa Nhầm
+
+Tất cả các bảng chính đều có trường `deleted_at`:
+
+```sql
+-- Mặc định, tất cả query phải filter deleted_at
+-- Best practice: tạo view hoặc Prisma middleware
+CREATE VIEW v_rooms_active AS
+    SELECT * FROM rooms WHERE deleted_at IS NULL;
+
+-- Trigger tự động set deleted_at khi DELETE
+CREATE OR REPLACE FUNCTION soft_delete()
+RETURNS TRIGGER AS $$
+BEGIN
+    OLD.deleted_at = now();
+    UPDATE room_availability SET deleted_at = now() WHERE room_id = OLD.id;
+    RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_room_soft_delete
+    BEFORE DELETE ON rooms
+    FOR EACH ROW EXECUTE FUNCTION soft_delete();
+```
+
+**Các bảng cần soft delete:**
+- `properties` — xóa property không mất lịch sử
+- `rooms` — xóa phòng không orphan các booking đã xác nhận
+- `room_media` — xóa ảnh không mất reference
+- `bookings` — xóa booking không mất audit trail
+- `smartlock_codes` — xóa không mất lịch sử truy cập
+
+---
+
+### 4.8 Audit Trail — Ghi Nhận Mọi Thay Đổi
+
+Bảng `AUDIT_LOGS` ghi lại **mọi thay đổi** trên các bảng nhạy cảm:
+
+```sql
+CREATE TABLE audit_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    entity_type VARCHAR(50) NOT NULL,   -- properties, rooms, room_availability
+    entity_id UUID NOT NULL,
+    action VARCHAR(20) NOT NULL,         -- CREATE, UPDATE, DELETE, STATUS_CHANGE
+    old_values JSONB,
+    new_values JSONB,
+    performed_by UUID,                    -- user_id hoặc system_id
+    performed_by_type VARCHAR(20),         -- HOST, ADMIN, SYSTEM
+    ip_address INET,
+    user_agent TEXT,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- GIN index cho query audit trail
+CREATE INDEX idx_audit_logs_entity
+    ON audit_logs (entity_type, entity_id, created_at DESC);
+
+-- Trigger tự động ghi audit log
+CREATE OR REPLACE FUNCTION audit_trigger()
+RETURNS TRIGGER AS $$
+BEGIN
+    INSERT INTO audit_logs (entity_type, entity_id, action, old_values, new_values, performed_by, performed_by_type)
+    VALUES (
+        TG_ARGV[0], OLD.id,
+        CASE WHEN TG_OP = 'INSERT' THEN 'CREATE'
+             WHEN TG_OP = 'DELETE' THEN 'DELETE'
+             ELSE 'UPDATE' END,
+        CASE WHEN TG_OP IN ('UPDATE', 'DELETE') THEN to_jsonb(OLD) END,
+        CASE WHEN TG_OP IN ('INSERT', 'UPDATE') THEN to_jsonb(NEW) END,
+        current_setting('app.current_user_id', true)::UUID,
+        current_setting('app.current_user_type', true)
+    );
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+```
+
+---
+
+### 4.9 Dead Letter Queue — Xử Lý Event Thất Bại
+
+```typescript
+// Consumer với retry + DLQ
+async handleEvent(event: Event, retryCount = 0) {
+  try {
+    await this.processEvent(event);
+    await this.broker.ack(event);
+  } catch (error) {
+    if (retryCount < 5) {
+      // Exponential backoff: 1s, 2s, 4s, 8s, 16s
+      await this.delay(Math.pow(2, retryCount) * 1000);
+      await this.handleEvent(event, retryCount + 1);
+    } else {
+      // Chuyển sang DLQ
+      await this.deadLetterQueue.add('failed-events', {
+        event,
+        error: error.message,
+        failedAt: new Date(),
+        retryCount,
+      });
+      await this.alertService.alert(`Event failed after 5 retries: ${event.type}`);
+      await this.broker.ack(event); // ACK để không block queue
+    }
+  }
+}
+```
+
+**DLQ Topics:**
+- `room.availability.reserved.dlq` — booking slot reservation failed
+- `booking.confirmed.dlq` — booking confirmation processing failed
+- `ota.sync.failed.dlq` — OTA sync event failed
+
+---
+
+### 4.10 Cache Invalidation — Đồng Bộ Giữa Cache và DB
+
+```typescript
+// Invalidate cache khi room_availability thay đổi
+// Trigger: hàm after UPDATE trên room_availability
+async afterAvailabilityUpdate(slotId: string, roomId: string, date: string) {
+  // 1. Xóa cache availability
+  await this.redis.del(`availability:${roomId}:${date}`);
+
+  // 2. Invalidate cache của property nếu cần
+  await this.redis.del(`property:${propertyId}:summary`);
+
+  // 3. Nếu là OTA-linked room → push update đến OTA
+  if (room.isOtaLinked) {
+    await this.otaSyncService.pushUpdate(roomId, date);
+  }
+}
+```
+
+**Cache invalidation triggers:**
+- `room_availability.updated_at` thay đổi → xóa cache availability
+- `rooms.updated_at` thay đổi → xóa cache room config
+- `properties.updated_at` thay đổi → xóa cache property summary
+
+---
+
+*Generated: 2026-05-21 — Homi 1.0 Room Service Design Report*
+

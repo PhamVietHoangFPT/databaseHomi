@@ -15,6 +15,11 @@ erDiagram
     ROOMS ||--o{ ROOM_AVAILABILITY : tracks_slots
     ROOMS ||--o{ ROOM_SLOT_BOOKINGS : linked_via_events
     ROOMS ||--o{ ROOM_BOOKING_EVENTS : outbox
+    PROPERTIES ||--o{ AUDIT_LOGS : audited_by
+
+    AUDIT_LOGS ||..|| PROPERTIES : logs
+    AUDIT_LOGS ||..|| ROOMS : logs
+    AUDIT_LOGS ||..|| ROOM_AVAILABILITY : logs
 
     PROPERTIES {
         uuid id PK
@@ -24,6 +29,8 @@ erDiagram
         boolean is_dangerous
         text address
         timestamp created_at
+        timestamp updated_at
+        timestamp deleted_at
     }
 
     ROOMS {
@@ -36,6 +43,8 @@ erDiagram
         decimal base_price
         string smartlock_device_id
         timestamp created_at
+        timestamp updated_at
+        timestamp deleted_at
     }
 
     ROOM_TYPES {
@@ -45,6 +54,7 @@ erDiagram
         string_array amenities
         int max_guests
         timestamp created_at
+        timestamp deleted_at
     }
 
     ROOM_MEDIA {
@@ -54,6 +64,21 @@ erDiagram
         string media_type
         boolean is_cover
         int display_order
+        timestamp created_at
+        timestamp deleted_at
+    }
+
+    AUDIT_LOGS {
+        uuid id PK
+        string entity_type
+        uuid entity_id
+        string action
+        jsonb old_values
+        jsonb new_values
+        uuid performed_by
+        string performed_by_type
+        string ip_address
+        string user_agent
         timestamp created_at
     }
 
@@ -74,6 +99,7 @@ erDiagram
         int version
         timestamp created_at
         timestamp updated_at
+        timestamp deleted_at
     }
 
     ROOM_SLOT_BOOKINGS {
@@ -85,6 +111,7 @@ erDiagram
         timestamptz check_in_at
         timestamptz check_out_at
         timestamp created_at
+        timestamp deleted_at
     }
 
     ROOM_BOOKING_EVENTS {
@@ -122,6 +149,7 @@ erDiagram
         uuid idempotency_key
         timestamp created_at
         timestamp updated_at
+        timestamp deleted_at
     }
 
     SMARTLOCK_CODES {
@@ -135,6 +163,7 @@ erDiagram
         timestamptz checked_in_at
         timestamptz checked_out_at
         timestamp created_at
+        timestamp deleted_at
     }
 
     BOOKING_CANCELLATIONS {
@@ -465,43 +494,151 @@ flowchart LR
 
 ## 5. Room Status After Check-out
 
-### 5a. Daily Model State Machine
+### 5a. Complete Room Status State Machine
 
 ```mermaid
 stateDiagram-v2
-    [*] --> AVAILABLE: Initial setup
-    AVAILABLE --> OCCUPIED: Guest check-in
-    OCCUPIED --> CLEANING: Guest check-out
+    [*] --> AVAILABLE: Room created
+    AVAILABLE --> PENDING: Booking submitted (PENDING_PAYMENT)
+    AVAILABLE --> BOOKED: Payment confirmed (CONFIRMED)
+    PENDING --> AVAILABLE: Payment failed/cancelled
+    PENDING --> BOOKED: Payment confirmed
+    PENDING --> AVAILABLE: Idempotency retry detected
+    BOOKED --> OCCUPIED: Guest checks in
+    BOOKED --> CANCELLED: Booking cancelled before check-in
+    BOOKED --> AVAILABLE: Payment expired (10min timeout)
+    OCCUPIED --> CLEANING: Guest checks out
+    OCCUPIED --> CANCELLED: Emergency cancellation
     CLEANING --> AVAILABLE: Housekeeping done
-    AVAILABLE --> BLOCKED: Admin closes room
-    BLOCKED --> AVAILABLE: Admin reopens room
+    CLEANING --> MAINTENANCE: Damage found
+    AVAILABLE --> CLOSED: Admin closes room
+    AVAILABLE --> MAINTENANCE: Issue detected
+    CLOSED --> AVAILABLE: Admin reopens room
+    CLOSED --> MAINTENANCE: Issue found during closure
+    MAINTENANCE --> AVAILABLE: Repairs completed
+    MAINTENANCE --> CLEANING: Quick fix done
+    CLOSED --> [*]: Room permanently deleted
     AVAILABLE --> [*]: Room deleted
-    CLEANING --> MAINTENANCE: Issue found
-    MAINTENANCE --> CLEANING: Fixed
-    MAINTENANCE --> AVAILABLE: Emergency resolved
 ```
 
-### 5b. Hourly Model Post Check-out Flow
+### 5b. DAILY Rental — Check-out Timeline
 
 ```mermaid
-flowchart LR
-    A1([Guest A checks out]) --> B1[System records exact checkout_time]
-    B1 --> C1[buffer_minutes = 30 next available at checkout + 30min]
-    C1 --> D1{Next booking contiguous?}
+gantt
+    title DAILY Rental: Room Status Timeline
+    dateFormat HH:mm
+    axisFormat %H:%M
 
-    D1 -->|Yes back-to-back| E1[Immediate slot activation]
-    D1 -->|No gap exists| F1[Slot marked OPEN for walk-in]
-
-    G1([Cron every 5 min]) --> H1[Scan CONFIRMED bookings where checkout + buffer lt now]
-    H1 --> I1{Any PENDING orders for room + time?}
-    I1 -->|Yes| J1[Auto-CONFIRM available slots]
-    I1 -->|No| K1[Slot stays OPEN for new orders]
-
-    L1([Housekeeper marks done]) --> M1[Force-override buffer_minutes = 0]
-    M1 --> N1[Room immediately available]
+    section Room 101
+    "OCCUPIED"   :active, o1, 14:00, 10h
+    "CLEANING"   :crit,   c1, after o1, 90m
+    "AVAILABLE"  :active, a1, after c1, 8h
 ```
 
-### 5c. State Transition Guard
+### 5c. HOURLY Rental — Multi-Booking Day Timeline
+
+```mermaid
+gantt
+    title HOURLY Rental: Multiple Bookings Per Day
+    dateFormat HH:mm
+    axisFormat %H:%M
+
+    section Room 101
+    Booking A  :done, bA1, 08:00, 12h
+    Buffer A   :crit, bufA, after bA1, 30m
+    Booking B  :done, bB1, 12:30, 04h
+    Buffer B   :crit, bufB, after bB1, 30m
+    Booking C  :done, bC1, 17:00, 03h
+    Buffer C   :crit, bufC, after bC1, 30m
+    Walk-in    :milestone, walk, 16:30, 30m
+    Walk-in    :milestone, walk2, 20:00, 30m
+```
+
+### 5d. HOURLY Availability Slot Calculator
+
+```mermaid
+flowchart TD
+    subgraph Input[Calculate Available Slots]
+        I1[checkout_time of last booking]
+        I2[buffer_minutes from room_availability]
+        I3[current_time from system clock]
+    end
+
+    Input --> C1[available_after = checkout_time + buffer_minutes]
+    C1 --> C2{available_after lt current_time?}
+
+    C2 -->|Yes slot is ready| C3[Mark slot status = OPEN]
+    C2 -->|No wait for buffer| C4[Slot status = CLEANING]
+    C4 --> C5{Cron every 5 min}
+
+    C5 --> C3
+
+    subgraph ExistingBookings[Scan for Existing Bookings]
+        C3 --> E1{Any CONFIRMED booking starts within next 2 hours?}
+        E1 -->|Yes back-to-back| E2[Pre-reserve slot for existing booking]
+        E1 -->|No gap exists| E3[Slot OPEN for new walk-in orders]
+    end
+
+    E2 --> E4[Calculate next available_after = booking_end + buffer]
+    E3 --> E5[Slot OPEN for duration = 24h - available_after]
+    E4 --> E3
+
+    E5 --> E6[Publish slot update to Redis cache]
+    E6 --> E7[Push to OTA via Channel Manager]
+```
+
+### 5e. Checkout → Cleaning → Available Transition Engine
+
+```mermaid
+flowchart TD
+    subgraph CheckoutTrigger[Checkout Trigger Event]
+        T1[CHECKOUT_COMPLETED event received]
+        T2[Extract: booking_id, room_id, checkout_time]
+    end
+
+    T1 --> S1[Calculate available_after]
+    S1 --> S2[available_after = checkout_time + buffer_minutes]
+
+    S2 --> S3{available_after le now?}
+
+    S3 -->|Yes already past| S4[Immediately set slot status = OPEN]
+    S3 -->|No in future| S5[Set slot status = CLEANING]
+    S5 --> SCHED[Cron every 5 min re-evaluates]
+
+    subgraph StatusEnum[Status Values]
+        ST1[AVAILABLE: slot visible and bookable]
+        ST2[CLEANING: buffer time in progress]
+        ST3[PENDING: slot reserved by PENDING_PAYMENT booking]
+        ST4[BOOKED: slot reserved by CONFIRMED booking]
+        ST5[CLOSED: manual admin closure]
+        ST6[OCCUPIED: guest currently in room]
+    end
+
+    subgraph HOURLYSpecial[HOURLY-Specific Rules]
+        H1[For HOURLY: recalculate ALL future slots for that date]
+        H2[For DAILY: only one slot per date — update once]
+        H1 --> H3[Generate hourly slots from 00:00 to 23:59]
+        H3 --> H4[Each slot: start_time, end_time, status, price_override]
+        H4 --> H5[Adjacent CLEANING slots merge visually as single block]
+    end
+
+    S4 --> H1
+    SCHED --> S4
+
+    subgraph OTAPush[OTA Synchronization]
+        S4 --> O1[room_availability updated: status = AVAILABLE]
+        O1 --> O2[Push to Redis cache with TTL]
+        O2 --> O3[Trigger OTA Channel Manager sync]
+        O3 --> O4[OTA updates availability within 5 seconds]
+    end
+
+    style S2 fill:#bbf,color:#000
+    style S3 fill:#ff9,color:#000
+    style H4 fill:#bbf,color:#000
+    style O4 fill:#dfd,color:#000
+```
+
+### 5f. State Transition Guard — Admin Status Change
 
 ```mermaid
 sequenceDiagram
@@ -525,6 +662,60 @@ sequenceDiagram
         Room_Service-->>Host: 200 OK Room closed
         Room_Service->>Message_Broker: Publish ROOM_STATUS_CHANGED
     end
+```
+
+### 5g. HOURLY Edge Cases — Walk-in and Back-to-Back
+
+```mermaid
+flowchart TD
+    subgraph BackToBack[Edge Case 1: Back-to-Back Booking]
+        B1[Guest A checks out at 12:00]
+        B2[Guest B already CONFIRMED for 12:00]
+        B1 --> B3{checkout_time + buffer le next_booking_start?}
+        B3 -->|Yes no buffer needed| B4[Slot immediately = OCCUPIED for B]
+        B3 -->|No gap needed| B5[Insert CLEANING slot 12:00 to 12:30]
+    end
+
+    subgraph WalkIn[Edge Case 2: Walk-in During CLEANING]
+        W1[Room in CLEANING: 12:00 to 12:30]
+        W2[Walk-in arrives 12:15 wants room 12:30 to 16:30]
+        W2 --> W3{Is slot at 12:30 still CLEANING?}
+        W3 -->|Yes cleaning not done| W4[Show estimated available: 12:30]
+        W3 -->|No buffer passed| W5[Slot is OPEN — allow booking]
+    end
+
+    subgraph Overlap[Edge Case 3: Overlapping HOURLY Bookings]
+        O1[Existing booking: 10:00 to 14:00]
+        O2[New booking: 12:00 to 16:00]
+        O2 --> O3{Check all existing slots for overlap}
+        O3 --> O4[Overlap detected at 12:00 to 14:00]
+        O4 --> O5[Reject: slot conflict]
+        O4 -->|No overlap| O6[Accept: 14:00 to 16:00 only]
+    end
+
+    subgraph Extend[Edge Case 4: Extend Stay]
+        E1[Guest in room: booked 10:00 to 12:00]
+        E2[Guest wants to extend to 14:00]
+        E2 --> E3{Check slots 12:00 to 14:00 available?}
+        E3 -->|Available| E4[Extend booking: UPDATE end_time]
+        E3 -->|Conflict at 13:00| E5[Show max available: 13:00]
+        E5 --> E6[Offer partial extension or next available slot]
+    end
+
+    subgraph Overnight[Edge Case 5: Overnight HOURLY]
+        ON1[Guest books 22:00 to 06:00 next day]
+        ON1 --> ON2[Generate slots spanning midnight boundary]
+        ON2 --> ON3[Create slots for date 1: 22:00-24:00]
+        ON3 --> ON4[Create slots for date 2: 00:00-06:00]
+        ON4 --> ON5[Single booking_id spans 2 date partitions]
+        ON5 --> ON6[Price = sum of each slot price_override]
+    end
+
+    style B4 fill:#dfd,color:#000
+    style W5 fill:#dfd,color:#000
+    style O5 fill:#fbb,color:#000
+    style E4 fill:#dfd,color:#000
+    style ON6 fill:#bbf,color:#000
 ```
 
 ---
@@ -910,4 +1101,488 @@ sequenceDiagram
 
 ---
 
-*Generated: 2026-05-20 — Homi 1.0 Room Service Database Design*
+## 11. Data Integrity — All Mechanisms
+
+### 11a. Integrity Layers Overview
+
+```mermaid
+flowchart TB
+    subgraph APILayer[API Layer]
+        DTO[DTO Validation]
+        IDEMPO[Idempotency Key]
+        RATE[Rate Limiting]
+    end
+
+    subgraph DBConstraint[Database Constraints]
+        CHECK[CHECK Constraints]
+        UNIQUE[UNIQUE Constraints]
+        FK[FK Constraints within service]
+        NOTNULL[NOT NULL Constraints]
+        PARTIAL[Partial Index]
+    end
+
+    subgraph Concurrency[Concurrency Control]
+        REDIS[Redis SETNX Lock]
+        PG[PostgreSQL SELECT FOR UPDATE]
+        ADVISORY[Advisory Locks]
+        VERSION[Optimistic Lock version]
+    end
+
+    subgraph BusinessRules[Business Rules]
+        AVAIL[Atomic Availability Formula]
+        BUFFER[buffer_minutes Enforcement]
+        TRANSITION[State Transition Guard]
+        DOUBLE[Double Booking Prevention]
+    end
+
+    subgraph EventIntegrity[Event Integrity]
+        OUTBOX[Transactional Outbox]
+        IDEMPOTENT[Consumer Idempotency]
+        DEAD[Dead Letter Queue]
+        REPLAY[Event Replay]
+    end
+
+    subgraph AuditTrail[Audit Trail]
+        TIMESTAMP[updated_at timestamps]
+        SOFT[Soft Delete deleted_at]
+        AUDIT[Audit Logs table]
+    end
+
+    APILayer --> DBConstraint
+    APILayer --> Concurrency
+    Concurrency --> BusinessRules
+    BusinessRules --> EventIntegrity
+    EventIntegrity --> AuditTrail
+```
+
+### 11b. Atomic Availability Formula — The Gatekeeper
+
+```mermaid
+flowchart TD
+    A[Incoming booking: room_id date start_time] --> B[Atomic UPDATE]
+    B --> C[UPDATE room_availability]
+    B --> D[SET on_hold_units = on_hold_units + 1]
+    B --> E[WHERE id = :slot_id]
+    B --> F[AND total_units + overbooking_buffer]
+    B --> G[ - booked_units - on_hold_units > 0]
+
+    F --> H{"Rows affected = 1?"}
+    H -->|Yes| I[INSERT room_slot_bookings PENDING]
+    H -->|No| J[INSERT room_booking_events FAILED]
+    H -->|No| K[Return 409 No availability]
+    I --> L[COMMIT]
+    L --> M[Increment version]
+    M --> N[Return slot_booking_id]
+
+    style I fill:#bbf,color:#000
+    style K fill:#fbb,color:#000
+```
+
+### 11c. CHECK Constraints — Database Level Enforcement
+
+```sql
+-- Prevent negative inventory values at DB level
+ALTER TABLE room_availability ADD CONSTRAINT
+    chk_non_negative_units CHECK (
+        booked_units >= 0
+        AND on_hold_units >= 0
+        AND booked_units + on_hold_units <= total_units + overbooking_buffer
+    );
+
+-- Prevent invalid rental configurations
+ALTER TABLE rooms ADD CONSTRAINT
+    chk_rental_config CHECK (
+        rental_type IN ('DAILY', 'HOURLY', 'BOTH')
+        AND min_hours >= 1
+        AND (hourly_price IS NULL OR hourly_price > 0)
+        AND base_price > 0
+    );
+
+-- Prevent past dates for availability slots
+ALTER TABLE room_availability ADD CONSTRAINT
+    chk_future_date CHECK (date >= CURRENT_DATE);
+```
+
+### 11d. Optimistic Locking — Version Field
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant Room_Service
+    participant Room_DB
+
+    App->>Room_Service: PATCH /rooms/:id
+    Room_Service->>Room_DB: SELECT * FROM rooms WHERE id = :id
+    Room_DB-->>Room_Service: room with version = 5
+    Room_Service->>Room_Service: Apply business logic update
+    Room_Service->>Room_DB: UPDATE rooms SET version = version + 1 WHERE id = :id AND version = 5
+    Room_DB-->>Room_Service: rows_affected = 1
+
+    alt Version mismatch (concurrent update)
+        Room_DB-->>Room_Service: rows_affected = 0
+        Room_Service-->>App: 409 Conflict: Concurrent modification detected
+    else Success
+        Room_Service-->>App: 200 OK updated
+    end
+```
+
+### 11e. Consumer Idempotency — Duplicate Event Handling
+
+```mermaid
+flowchart TD
+    A[Event arrives from broker] --> B{Event ID in processed_events?}
+    B -->|Yes| C[ACK message skip processing]
+    B -->|No| D[Begin transaction]
+    D --> E[Check event_id in idempotency table]
+    E --> F{Already processed?}
+    F -->|Yes| G[ACK skip]
+    F -->|No| H[Process business logic]
+    H --> I[UPDATE idempotency: event_id processed]
+    I --> J[COMMIT]
+    J --> K[ACK to broker]
+
+    style C fill:#bbf,color:#000
+    style G fill:#bbf,color:#000
+```
+
+### 11f. Soft Delete Pattern — Protect Data from Accidental Deletion
+
+```mermaid
+flowchart LR
+    subgraph HardDelete
+        HD1[DELETE FROM rooms WHERE id = :id]
+        HD2[Room data permanently lost]
+        HD3[Related bookings become orphaned]
+        HD4[Audit trail completely gone]
+        HD1 --> HD2 --> HD3 --> HD4
+    end
+
+    subgraph SoftDelete
+        SD1[UPDATE rooms SET deleted_at = current_timestamp WHERE id = :id]
+        SD2[Room data preserved]
+        SD3[Related bookings stay linked]
+        SD4[Audit trail intact]
+        SD5[Room hidden from queries by default]
+        SD1 --> SD2 --> SD3 --> SD4 --> SD5
+    end
+```
+
+```sql
+-- Query pattern: always filter deleted_at
+CREATE INDEX idx_rooms_active ON rooms (property_id)
+    WHERE deleted_at IS NULL;
+
+-- Restore deleted record
+UPDATE rooms SET deleted_at = NULL WHERE id = :id;
+```
+
+### 11g. Event Outbox Pattern — Guaranteed Delivery
+
+```mermaid
+sequenceDiagram
+    participant AppLayer
+    participant RoomService
+    participant RoomDB
+    participant OutboxRelay
+    participant Broker
+
+    AppLayer->>RoomService: Booking request
+    RoomService->>RoomDB: BEGIN TRANSACTION
+    RoomService->>RoomDB: UPDATE room_availability (atomic)
+    RoomService->>RoomDB: UPDATE room_slot_bookings
+    RoomService->>RoomDB: INSERT room_booking_events (PENDING)
+    RoomService->>RoomDB: COMMIT
+    Note over RoomDB: DB write + event insert in ONE atomic operation
+
+    loop Every 1 second
+        OutboxRelay->>RoomDB: SELECT * FROM room_booking_events WHERE status = PENDING
+        RoomDB-->>OutboxRelay: Pending events
+        OutboxRelay->>Broker: Publish event
+        Broker-->>OutboxRelay: Published OK
+        OutboxRelay->>RoomDB: UPDATE status = PUBLISHED
+        OutboxRelay->>RoomDB: UPDATE published_at = now()
+    end
+
+    Note over OutboxRelay,Broker: If broker fails: retry with backoff. Max 5 retries. Then status = FAILED and alert Admin.
+```
+
+### 11h. Dead Letter Queue — Failed Event Handling
+
+```mermaid
+flowchart TD
+    A[Event published to broker] --> B{Delivered to consumer?}
+    B -->|Yes| C[Consumer ACK]
+    B -->|No after max retries| D[Move to DLQ topic]
+    D --> E[Alert Admin]
+
+    C --> F{Processing successful?}
+    F -->|Yes| G[Commit offset]
+    F -->|No| H[Consumer NACK]
+    H --> B
+
+    E --> I{Manual action needed?}
+    I -->|Yes| J[Admin reviews DLQ]
+    J --> K[Republish or compensate]
+    I -->|No| L[Auto-retry with delay]
+    K --> A
+    L --> A
+```
+
+### 11i. Data Integrity Checklist
+
+| Layer | Mechanism | Protects Against |
+|-------|-----------|----------------|
+| API | Idempotency key | Duplicate booking requests |
+| API | Rate limiting | Flash sale abuse |
+| API | DTO validation | Invalid data entering system |
+| DB | CHECK constraints | Negative inventory values |
+| DB | Partial index | Queries on deleted rows |
+| DB | NOT NULL | Missing critical fields |
+| DB | Optimistic lock version | Concurrent updates to same row |
+| DB | Advisory locks | Multi-room booking conflicts |
+| Business | Atomic UPDATE formula | Overbooking |
+| Business | State transition guard | Closing room with active orders |
+| Business | buffer_minutes enforcement | Overlapping HOURLY bookings |
+| Event | Outbox pattern | Event lost if broker down |
+| Event | Consumer idempotency | Duplicate event processing |
+| Event | DLQ + retry | Silent event failure |
+| Audit | updated_at | Cache invalidation |
+| Audit | deleted_at | Soft delete protection |
+| Audit | AUDIT_LOGS | Full change history |
+
+---
+
+### 6d. Full Automated Check-in Architecture
+
+```mermaid
+flowchart TD
+    subgraph BookingConfirmed[Booking CONFIRMED Event]
+        E1[Booking CONFIRMED via payment webhook]
+        E2[Event: BOOKING_CONFIRMED published]
+    end
+
+    subgraph AutomationDecision[Automation Gate]
+        E1 --> D1{is_automated = true?}
+        D1 -->|Yes| D2[Generate access code]
+        D1 -->|No| D3[Notify Host to provide code]
+    end
+
+    subgraph CodeGeneration[Code Generation Pipeline]
+        D2 --> G1[Calculate valid_from = checkin_time]
+        G1 --> G2[Calculate valid_until = checkout_time + buffer_minutes]
+        G2 --> G3[Generate code via provider API or local RNG]
+        G3 --> G4[AES-256-GCM encrypt with room-specific key]
+        G4 --> G5[Store code_encrypted in smartlock_codes table]
+        G5 --> G6[Publish CODE_GENERATED event to broker]
+    end
+
+    subgraph DeliveryLayer[Guest Delivery]
+        G6 --> DL1[Push notification: Your room is ready]
+        DL1 --> DL2[Code pushed to guest app via FCM/APNs]
+        DL2 --> DL3[Code cached locally in app for offline access]
+        DL3 --> DL4[Display: Access code + QR code + BLE auto-unlock]
+    end
+
+    subgraph AccessLayer[Guest Access]
+        DL4 --> A1[Guest arrives at property]
+        A1 --> A2{Device connectivity}
+        A2 -->|BLE enabled| A3[Proximity auto-unlock via BLE]
+        A2 -->|BLE disabled| A4[Manual PIN entry on keypad]
+        A2 -->|QR scanner| A5[QR code scanned on smartlock screen]
+        A3 --> A6[Smartlock unlocks, event logged]
+        A4 --> A6
+        A5 --> A6
+        A6 --> A7[Audit log: unlock_timestamp + method + success/fail]
+    end
+
+    subgraph CheckoutLayer[Check-out & Revocation]
+        CL1[Check-out time reached OR guest taps Check-out]
+        CL1 --> CL2[Revoke code via provider API]
+        CL2 --> CL3[Mark smartlock_codes is_active = false]
+        CL3 --> CL4[Publish CHECKOUT_COMPLETED event]
+        CL4 --> CL5[Room slot released after buffer_minutes]
+    end
+
+    G6 --> CL1
+    A7 --> AuditDB[(Audit DB)]
+    CL5 --> RoomAvailable[Room available for next booking]
+
+    style D1 fill:#ff9,color:#000
+    style G4 fill:#bbf,color:#000
+    style A7 fill:#bbf,color:#000
+    style AuditDB fill:#f9f,color:#000
+```
+
+### 6e. Smartlock Provider Integration — Adapter Pattern
+
+```mermaid
+flowchart LR
+    subgraph HomiCore[Homi Core System]
+        B[Booking Service]
+        R[Room Service]
+        C[Code Manager Service]
+    end
+
+    subgraph AdapterLayer[Smartlock Adapter Layer]
+        AA[August Adapter]
+        YA[Yale Adapter]
+        SC[Schlage Adapter]
+        NK[Nuki Adapter]
+        LK[Lockly Adapter]
+        SA[SALTO Adapter]
+        TT[TTLock Adapter]
+        DR[Dormakaba Adapter]
+    end
+
+    subgraph DeviceLayer[Physical Devices]
+        AUG[August Smart Lock]
+        YAL[Yale Conexis]
+        SCH[Schlage Encode]
+        NUK[Nuki Smart Lock]
+        LOK[Lockly Secure Pro]
+        SAL[SALTO KS]
+        TTL[TTLock Padlock]
+        DOR[Dormakaba ID.Trusted]
+    end
+
+    C -->|unified interface| AA
+    C -->|unified interface| YA
+    C -->|unified interface| SC
+    C -->|unified interface| NK
+    C -->|unified interface| LK
+    C -->|unified interface| SA
+    C -->|unified interface| TT
+    C -->|unified interface| DR
+
+    AA -->|HTTPS REST| AUG
+    YA -->|Bluetooth LE + Cloud| YAL
+    SC -->|Z-Wave + WiFi| SCH
+    NK -->|Bluetooth + Bridge| NUK
+    LK -->|Bluetooth + WiFi| LOK
+    SA -->|SALTO JustIN Mobile| SAL
+    TT -->|Bluetooth + Cloud| TTL
+    DR -->|RFID + NFC + BLE| DOR
+
+    style HomiCore fill:#dfd,color:#000
+    style AdapterLayer fill:#ffe0b0,color:#000
+```
+
+### 6f. Access Code State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> GENERATED: Booking CONFIRMED
+
+    GENERATED --> ACTIVE: valid_from timestamp reached
+    GENERATED --> EXPIRED: checkout_time + buffer passed without activation
+    GENERATED --> CANCELLED: Booking CANCELLED before check-in
+
+    ACTIVE --> ACTIVE: Guest re-enters (unlimited)
+    ACTIVE --> USED: First successful unlock
+    ACTIVE --> REVOKED: Host or system revokes early
+    ACTIVE --> EXPIRED: valid_until timestamp passed
+
+    USED --> [*]: Checkout time reached
+
+    REVOKED --> [*]: Code permanently disabled
+
+    EXPIRED --> [*]: Auto-cleanup by cron
+
+    CANCELLED --> [*]: Code purged
+```
+
+### 6g. Offline Mode & Fallback Mechanisms
+
+```mermaid
+flowchart TD
+    subgraph PreArrival[Pre-Arrival]
+        P1[Booking CONFIRMED]
+        P1 --> P2[Generate code and encrypt]
+        P2 --> P3[Push encrypted code to guest app]
+        P3 --> P4[Code stored in app local storage: Encrypted vault]
+        P4 --> P5[App downloads code at booking confirmation]
+    end
+
+    subgraph Arrival[Guest Arrival]
+        P5 --> A1[Guest arrives at door]
+        A1 --> A2{Device online?}
+        A2 -->|Online| A3[App attempts cloud unlock via provider API]
+        A3 --> A4{API responds?}
+        A4 -->|Success| A5[Lock opens, success logged]
+        A4 -->|Timeout / Error| A6{Retry < 3?}
+        A6 -->|Yes| A3
+        A6 -->|No| A7{Fallback enabled?}
+        A7 -->|Yes| F1[Show offline PIN from encrypted vault]
+        F1 --> F2[Guest enters PIN on smartlock keypad]
+        F2 --> F3[Smartlock verifies PIN locally, unlocks]
+        A2 -->|Offline| A7
+    end
+
+    subgraph FallbackChain[Fallback Priority]
+        F1 --> F4{Try QR code?}
+        F4 -->|Yes| F5[App displays dynamic QR]
+        F5 --> F6[Smartlock scans QR via camera]
+        F6 --> F7[QR validated against encrypted payload]
+        F4 -->|No| F8{Last resort: Contact Host?}
+        F8 --> F9[App shows host contact: Call / Chat]
+        F9 --> F10[Host unlocks via admin panel or physical key]
+        F10 --> F11[Access logged under host account]
+    end
+
+    subgraph PostAccess[Post-Access]
+        A5 --> POST1[Unlock event logged: timestamp, method, result]
+        F3 --> POST1
+        F7 --> POST1
+        F11 --> POST1
+        POST1 --> POST2[Audit trail: BOOKING_ID, ROOM_ID, GUEST_ID, METHOD]
+    end
+
+    style P4 fill:#bbf,color:#000
+    style F9 fill:#ff9,color:#000
+    style POST2 fill:#f9f,color:#000
+```
+
+### 6h. Smartlock Access Audit Trail
+
+```mermaid
+flowchart LR
+    subgraph UnlockAttempt[Unlock Attempt]
+        UA1[Unlock attempt detected]
+        UA2[Log: timestamp, booking_id, room_id]
+        UA3[Log: guest_id, device_fingerprint]
+        UA4[Log: unlock_method BLE / PIN / QR / NFC]
+        UA5[Log: result SUCCESS / FAIL / BLOCKED]
+        UA1 --> UA2 --> UA3 --> UA4 --> UA5
+    end
+
+    subgraph AlertLayer[Alerting]
+        UA5 --> AL1{Result = FAIL or BLOCKED?}
+        AL1 -->|Yes| AL2[Increment fail_count for this booking]
+        AL2 --> AL3{fail_count > 3?}
+        AL3 -->|Yes| AL4[Alert Host: repeated failed attempts]
+        AL3 -->|No| AL5[Log and continue]
+        AL1 -->|No| AL6[Reset fail_count to 0]
+    end
+
+    subgraph AnalyticsLayer[Analytics]
+        UA5 --> AN1[Aggregate: unlock_count per booking]
+        AN1 --> AN2[Detect unusual patterns e.g. 3AM unlock]
+        AN2 --> AN3[Flag suspicious activity]
+        AN3 --> AN4[Notify Host or Admin]
+        AN2 -->|Normal| AN5[Update booking check-in analytics]
+    end
+
+    subgraph RetentionLayer[Data Retention]
+        UA5 --> RET1[Write to smartlock_access_logs table]
+        RET1 --> RET2[Retention: 90 days hot, 2 years archive]
+        RET2 --> RET3[GDPR: export on request, delete on retention]
+    end
+
+    style UA5 fill:#bbf,color:#000
+    style AL4 fill:#fbb,color:#000
+    style AN3 fill:#ff9,color:#000
+```
+
+---
+
+*Generated: 2026-05-21 — Homi 1.0 Room Service Database Design*
