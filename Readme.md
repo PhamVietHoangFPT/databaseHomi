@@ -18,7 +18,7 @@ Bảng này đại diện cho một thực thể vật lý (khách sạn, homest
 
 | Trường | Kiểu dữ liệu | Ràng buộc | Mô tả kỹ thuật |
 |--------|-------------|-----------|----------------|
-| `id` | `UUID` | PK | Định danh duy nhất toàn cục. Dùng UUID v4 để đảm bảo tính **globally unique** trong kiến trúc phân tán, tránh collision giữa các service khi sinh ID đồng thời. |
+| `id` | `UUID` | PK | Định danh duy nhất toàn cục. Dùng UUID v7 (timestamp-ordered) để đảm bảo tính **globally unique** trong kiến trúc phân tán, tránh collision giữa các service khi sinh ID đồng thời. UUID v7 **không random**, byte đầu chứa timestamp, giúp B-tree index hiệu quả hơn so với UUID v4 random. |
 | `host_id` | `UUID` | **Không có FK** | Chỉ lưu UUID tham chiếu đến `accounts(id)` trong User Service. **Không thiết lập FK cứng** vì đây là cross-service reference — FK cứng sẽ gây coupled deployment và cascade delete không kiểm soát được. Xử lý consistency bằng tầng ứng dụng hoặc event. |
 | `name` | `VARCHAR(255)` | NOT NULL | Tên hiển thị của cơ sở lưu trú (VD: "Homi Landmark 81", "Biệt thự Biển Đà Nẵng"). Dùng cho app hiển thị và đồng bộ lên OTA. |
 | `is_automated` | `BOOLEAN` | NOT NULL, DEFAULT `false` | Cờ xác định cơ sở có sử dụng **Smartlock tự động** hay không. Nếu `true`, hệ thống sẽ tự động sinh mã khóa, mã hóa AES-256-GCM và gửi cho guest qua app. Nếu `false`, Host phải gửi mã thủ công. Trường này là **logic branch** quan trọng trong smartlock flow. |
