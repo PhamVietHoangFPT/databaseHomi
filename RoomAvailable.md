@@ -47,27 +47,27 @@ Mỗi ô `[from → to]` có 4 thông tin: **Trigger**, **Điều kiện**, **Ac
 
 ```
 ┌─────────────┬────────────┬──────────────────────────────┬────────────────────────────┬────────────────────────┬──────────────────┐
-│    FROM     │     TO     │          TRIGGER              │       ĐIỀU KIỆN            │        ACTION          │     EVENT        │
+│    FROM     │     TO     │          TRIGGER             │       ĐIỀU KIỆN            │        ACTION          │     EVENT        │
 ├─────────────┼────────────┼──────────────────────────────┼────────────────────────────┼────────────────────────┼──────────────────┤
 │ AVAILABLE   │ RESERVED   │ Guest nhấn "Thanh toán"      │ Slot còn trống             │ on_hold_units + 1      │ SLOT_RESERVED    │
-│ AVAILABLE   │ CLOSED     │ Host/Admin đóng phòng        │ Không có booking active     │ status = CLOSED        │ ROOM_CLOSED      │
-│ AVAILABLE   │ MAINTENANCE│ Phát hiện hư hỏng           │ Không có guest trong phòng │ status = MAINTENANCE  │ ROOM_FLAGGED     │
-│ RESERVED    │ CONFIRMED  │ Payment webhook success       │ Payment verified            │ booked_units + 1       │ BOOKING_CONFIRMED│
-│ RESERVED    │ AVAILABLE  │ Payment fail / timeout 10m    │ —                          │ on_hold_units - 1      │ SLOT_RELEASED    │
-│ CONFIRMED   │ CHECKED_IN │ Smartlock unlock thành công  │ check_in_time <= now        │ status = CHECKED_IN    │ CHECKIN_COMPLETED│
+│ AVAILABLE   │ CLOSED     │ Host/Admin đóng phòng        │ Không có booking active    │ status = CLOSED        │ ROOM_CLOSED      │
+│ AVAILABLE   │ MAINTENANCE│ Phát hiện hư hỏng            │ Không có guest trong phòng │ status = MAINTENANCE   │ ROOM_FLAGGED     │
+│ RESERVED    │ CONFIRMED  │ Payment webhook success      │ Payment verified           │ booked_units + 1       │ BOOKING_CONFIRMED│
+│ RESERVED    │ AVAILABLE  │ Payment fail / timeout 10m   │ —                          │ on_hold_units - 1      │ SLOT_RELEASED    │
+│ CONFIRMED   │ CHECKED_IN │ Smartlock unlock thành công  │ check_in_time <= now       │ status = CHECKED_IN    │ CHECKIN_COMPLETED│
 │ CONFIRMED   │ AVAILABLE  │ Cancel hoặc 24h no-show      │ —                          │ booked_units - 1       │ BOOKING_CANCELLED│
 │ CHECKED_IN  │ CHECKED_OUT│ Guest nhấn "Check-out"       │ —                          │ status = CHECKED_OUT   │ CHECKOUT_STARTED │
-│ CHECKED_OUT │ CLEANING   │ CHECKOUT_STARTED event       │ Auto 30 giây sau checkout   │ status = CLEANING     │ CLEANING_STARTED │
-│ CLEANING    │ INSPECTING │ Housekeeper nhấn "Done"       │ Cleaning hoàn tất          │ status = INSPECTING    │ CLEANING_DONE    │
-│ INSPECTING  │ AVAILABLE  │ Host/Admin nhấn "Approve"    │ Phòng đạt chuẩn           │ status = AVAILABLE     │ ROOM_READY      │
-│ INSPECTING  │ MAINTENANCE│ Host/Admin phát hiện vấn đề  │ Cần sửa chữa               │ status = MAINTENANCE  │ MAINTENANCE_START│
-│ CLEANING    │ MAINTENANCE│ Phát hiện hư hỏng khi dọn   │ Cần sửa chữa               │ status = MAINTENANCE  │ MAINTENANCE_START│
-│ MAINTENANCE │ CLEANING   │ Sửa chữa xong, cần dọn dẹp  │ —                          │ status = CLEANING     │ CLEANING_STARTED │
-│ MAINTENANCE │ AVAILABLE  │ Sửa chữa xong, phòng sạch    │ Host approve               │ status = AVAILABLE    │ ROOM_READY      │
-│ CLOSED      │ AVAILABLE  │ Host/Admin mở lại phòng      │ Không có booking active     │ status = AVAILABLE    │ ROOM_REOPENED    │
-│ CLOSED      │ MAINTENANCE│ Phát hiện vấn đề khi đóng   │ —                          │ status = MAINTENANCE  │ MAINTENANCE_START│
-│ CLOSED      │ BLOCKED    │ Admin block property         │ Compliance issue            │ status = BLOCKED       │ ROOM_BLOCKED     │
-│ BLOCKED     │ AVAILABLE  │ Admin unblock                │ Issue resolved             │ status = AVAILABLE    │ ROOM_UNBLOCKED   │
+│ CHECKED_OUT │ CLEANING   │ CHECKOUT_STARTED event       │ Auto 30 giây sau checkout  │ status = CLEANING      │ CLEANING_STARTED │
+│ CLEANING    │ INSPECTING │ Housekeeper nhấn "Done"      │ Cleaning hoàn tất          │ status = INSPECTING    │ CLEANING_DONE    │
+│ INSPECTING  │ AVAILABLE  │ Host/Admin nhấn "Approve"    │ Phòng đạt chuẩn            │ status = AVAILABLE     │ ROOM_READY       │
+│ INSPECTING  │ MAINTENANCE│ Host/Admin phát hiện vấn đề  │ Cần sửa chữa               │ status = MAINTENANCE   │ MAINTENANCE_START│
+│ CLEANING    │ MAINTENANCE│ Phát hiện hư hỏng khi dọn    │ Cần sửa chữa               │ status = MAINTENANCE   │ MAINTENANCE_START│
+│ MAINTENANCE │ CLEANING   │ Sửa chữa xong, cần dọn dẹp   │ —                          │ status = CLEANING      │ CLEANING_STARTED │
+│ MAINTENANCE │ AVAILABLE  │ Sửa chữa xong, phòng sạch    │ Host approve               │ status = AVAILABLE     │ ROOM_READY       │
+│ CLOSED      │ AVAILABLE  │ Host/Admin mở lại phòng      │ Không có booking active    │ status = AVAILABLE     │ ROOM_REOPENED    │
+│ CLOSED      │ MAINTENANCE│ Phát hiện vấn đề khi đóng    │ —                          │ status = MAINTENANCE   │ MAINTENANCE_START│
+│ CLOSED      │ BLOCKED    │ Admin block property         │ Compliance issue           │ status = BLOCKED       │ ROOM_BLOCKED     │
+│ BLOCKED     │ AVAILABLE  │ Admin unblock                │ Issue resolved             │ status = AVAILABLE     │ ROOM_UNBLOCKED   │
 └─────────────┴────────────┴──────────────────────────────┴────────────────────────────┴────────────────────────┴──────────────────┘
 ```
 
