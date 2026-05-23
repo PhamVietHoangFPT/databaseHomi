@@ -295,7 +295,7 @@ function subtractMinutes(dateTime: string, minutes: number): string {
 
 ---
 
-## 6. 5 Edge Cases Đặc biệt (HOURLY)
+## 6. 4 Edge Cases Đặc biệt (HOURLY)
 
 ### 6a. Back-to-Back — Không cần đợi buffer
 
@@ -362,22 +362,6 @@ Logic:
      → Chỉ offer đến 13:00 (hoặc đến khi booking冲突 bắt đầu)
   3. Tính giá thêm: (14:00 - 12:00) × hourly_price
   4. UPDATE booking: check_out_time = 14:00
-```
-
-### 6e. Overnight HOURLY — Booking qua đêm
-
-```
-Guest đặt: 22:00 ngày 1 → 06:00 ngày 2
-```
-
-```
-Logic:
-  1. Tạo 2 partition rows:
-     - Ngày 1: slot 22:00 → 24:00
-     - Ngày 2: slot 00:00 → 06:00
-  2. Gán cùng một booking_id cho cả 2 rows
-  3. Tổng giá = sum(price_override của 2 slots)
-  4. Checkout = 06:00 ngày 2 → buffer = 06:30 ngày 2
 ```
 
 ---
@@ -529,9 +513,9 @@ flowchart TD
     end
 
     subgraph GuestActions[Guest Actions]
-        G --> PAY[Chọn "Thanh toán"]
-        G --> CO[Chọn "Check-out"]
-        G --> CI[Chọn "Check-in"]
+        G --> PAY["Chọn 'Thanh toán'"]
+        G --> CO["Chọn 'Check-out'"]
+        G --> CI["Chọn 'Check-in'"]
         G --> CANCEL[Hủy booking]
     end
 
@@ -544,9 +528,9 @@ flowchart TD
 
     subgraph SystemActions[System Events]
         S --> PAYMENT[Payment webhook]
-        S --> TIMEOUT[Cron: 10 phút timeout]
-        S --> CLEAN[Cron: 5 phút cleaning]
-        S --> INSPECT[Cron: 15 phút inspecting]
+        S --> TIMEOUT["Cron: 10 phút timeout"]
+        S --> CLEAN["Cron: 5 phút cleaning"]
+        S --> INSPECT["Cron: 15 phút inspecting"]
     end
 
     PAY --> RESERVED[RESERVED]
@@ -555,8 +539,8 @@ flowchart TD
     CANCEL --> AVAIL
     CO --> COUT[CHECKED_OUT]
     COUT --> CLEANING[CLEANING]
-    CLEAN --> INSPECT[INSPECTING]
-    INSPECT --> AVAIL
+    CLEAN --> INSPECTING_STATE[INSPECTING]
+    INSPECTING_STATE --> AVAIL
     CLOSE --> CLOSED[CLOSED]
     REOPEN --> AVAIL2[AVAILABLE]
     MAINT --> MAINTEN[MAINTENANCE]
@@ -569,7 +553,7 @@ flowchart TD
 
     style RESERVED fill:#ff9,color:#000
     style CLEANING fill:#ff9,color:#000
-    style INSPECT fill:#ff9,color:#000
+    style INSPECTING_STATE fill:#ff9,color:#000
     style AVAIL fill:#dfd,color:#000
     style MAINTENANCE fill:#fbb,color:#000
     style CLOSED fill:#fbb,color:#000
