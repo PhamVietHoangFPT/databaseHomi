@@ -758,270 +758,379 @@ Tầng 6: Audit Trail      → updated_at, deleted_at, AUDIT_LOGS
 
 ---
 
-### 4.1 Trạng thái Phòng — Vòng đời 7 Trạng thái
+### 4.1 Trạng thái Phòng — Vòng đời 10 Trạng thái
 
-Hệ thống Homi 1.0 định nghĩa **7 trạng thái phòng**, mỗi trạng thái có ý nghĩa nghiệp vụ riêng biệt và chuyển đổi theo quy tắc nghiêm ngặt.
+Hệ thống Homi 1.0 định nghĩa **10 trạng thái phòng**, mỗi trạng thái có ý nghĩa nghiệp vụ riêng biệt và chuyển đổi theo quy tắc nghiêm ngặt. Mở rộng từ 7 lên 10 trạng thái để phân tách rõ ràng giữa trạng thái **booking** (RESERVED, CONFIRMED, CHECKED_IN) và trạng thái **vật lý** (CHECKED_OUT, CLEANING, INSPECTING).
 
-#### 4.1.1 Bảng mô tả 7 trạng thái
+#### 4.1.1 Bảng mô tả 10 trạng thái
 
-| Trạng thái | Mã | Mô tả kỹ thuật | Visible với guest |
-|------------|-----|----------------|--------------------|
-| **Sẵn sàng** | `AVAILABLE` | Phòng trống, sạch sẽ, có thể đặt ngay | ✅ Yes |
-| **Chờ thanh toán** | `PENDING` | Đã giữ chỗ (PENDING_PAYMENT) chờ thanh toán VietQR | ❌ No |
-| **Đã đặt** | `BOOKED` | Đã thanh toán thành công, chưa check-in | ❌ No |
-| **Đang ở** | `OCCUPIED` | Guest đã check-in, đang sử dụng phòng | ❌ No |
-| **Đang dọn dẹp** | `CLEANING` | Guest checkout xong, chờ housekeeping hoàn tất | ❌ No |
-| **Đóng cửa** | `CLOSED` | Admin đóng phòng thủ công (nghỉ phép, sửa chữa...) | ❌ No |
+| Trạng thái | Mã | Mô tả kỹ thuật | Visible guest |
+|------------|-----|----------------|---------------|
+| **Sẵn sàng** | `AVAILABLE` | Phòng trống, sạch sẽ, Host đã approve. Có thể đặt ngay | ✅ Yes |
+| **Đã giữ chỗ** | `RESERVED` | Guest đã nhấn "Thanh toán", đang chờ VietQR (PENDING_PAYMENT) | ❌ No |
+| **Đã xác nhận** | `CONFIRMED` | Thanh toán thành công, chưa check-in | ❌ No |
+| **Đã nhận phòng** | `CHECKED_IN` | Guest đã mở khóa smartlock thành công, đang ở trong phòng | ❌ No |
+| **Đã trả phòng** | `CHECKED_OUT` | Guest đã nhấn Check-out, đang chờ housekeeping | ❌ No |
+| **Đang dọn dẹp** | `CLEANING` | CHECKED_OUT xong, housekeeping đang làm việc | ❌ No |
+| **Đang kiểm tra** | `INSPECTING` | Housekeeping xong, Host/Admin kiểm tra lần cuối trước khi mở lại | ❌ No |
+| **Đóng cửa** | `CLOSED` | Admin/Host đóng phòng thủ công (nghỉ phép, sửa chữa...) | ❌ No |
 | **Bảo trì** | `MAINTENANCE` | Phát hiện hư hỏng cần sửa chữa | ❌ No |
+| **Bị khóa** | `BLOCKED` | Vi phạm chính sách hoặc lý do pháp lý — Admin khóa | ❌ No |
 
-**Quy tắc quan trọng:** Chỉ trạng thái `AVAILABLE` mới hiển thị cho guest và có thể nhận đặt phòng mới.
+**Quy tắc vàng:** Chỉ trạng thái `AVAILABLE` mới hiển thị cho guest và có thể nhận đặt phòng mới.
 
-#### 4.1.2 Quy tắc chuyển đổi trạng thái (State Transition Rules)
+#### 4.1.2 Quan hệ: Trạng thái Booking ↔ Trạng thái Phòng
 
-Mỗi chuyển đổi trạng thái phải tuân theo ma trận bên dưới. Các chuyển đổi không được liệt kê = **bị cấm**.
-
-```
-AVAILABLE  → PENDING    : Guest nhấn "Thanh toán" (booking submitted)
-AVAILABLE  → CLOSED     : Admin đóng phòng thủ công
-AVAILABLE  → MAINTENANCE: Phát hiện vấn đề kỹ thuật
-AVAILABLE  → [*]        : Xóa phòng (soft delete)
-
-PENDING    → AVAILABLE  : Thanh toán thất bại / timeout (10 phút)
-PENDING    → BOOKED     : Thanh toán thành công
-PENDING    → AVAILABLE  : Retry idempotency detected
-
-BOOKED     → OCCUPIED   : Guest nhấn "Check-in"
-BOOKED     → CANCELLED   : Guest hủy trước check-in
-BOOKED     → AVAILABLE  : Booking expired (không check-in sau 24h)
-BOOKED     → CLEANING   : Admin/hệ thống hủy sau khi guest đã ở
-
-OCCUPIED   → CLEANING   : Guest nhấn "Check-out"
-OCCUPIED   → CANCELLED   : Khẩn cấp (emergency)
-
-CLEANING   → AVAILABLE  : Housekeeping hoàn tất
-CLEANING   → MAINTENANCE: Phát hiện hư hỏng khi dọn phòng
-
-CLOSED     → AVAILABLE  : Admin mở lại phòng
-CLOSED     → MAINTENANCE: Phát hiện vấn đề khi đóng
-CLOSED     → [*]        : Xóa phòng
-
-MAINTENANCE→ AVAILABLE  : Sửa chữa hoàn tất
-MAINTENANCE→ CLEANING   : Sửa nhanh xong, chỉ cần dọn dẹp
-```
-
-#### 4.1.3 Mô hình DAILY — Check-out Timeline
-
-Với thuê theo ngày, mỗi ngày chỉ có **một booking**. Chu kỳ đơn giản:
+Trạng thái booking (bảng `bookings`) và trạng thái phòng (bảng `room_availability`) đi **song song nhưng độc lập**:
 
 ```
-14:00 Check-in ──[OCCUPIED]── 12:00 Check-out ──[CLEANING 90m]── 13:30 Available
+Bookings Status          →  Room Status
+PENDING_PAYMENT         →  RESERVED
+CONFIRMED               →  CONFIRMED
+CHECKED_IN              →  CHECKED_IN
+CHECKED_OUT              →  CHECKED_OUT
+CANCELLED / EXPIRED      →  AVAILABLE
+
+Room lifecycle: CHECKED_OUT → CLEANING → INSPECTING → AVAILABLE
 ```
 
-**Công thức tính available time (DAILY):**
-```
-available_time = checkout_time + buffer_minutes
-```
-
-**Ví dụ:**
-- Checkout: 12:00
-- buffer_minutes: 90 (1 tiếng rưỡi)
-- Available: 13:30
-
-#### 4.1.4 Mô hình HOURLY — Check-out Timeline (Phức tạp)
-
-Với thuê theo giờ, **một ngày có thể có nhiều booking**. Mỗi checkout tạo ra một buffer riêng, và các buffer có thể **chồng lấn**.
-
-**Ví dụ một ngày phức tạp:**
+#### 4.1.3 Quy tắc chuyển đổi trạng thái (State Transition Rules)
 
 ```
-08:00-12:00  Booking A ──[CLEANING 30m]── 12:30 ── Booking B ──[CLEANING 30m]── 17:00 ── Booking C ──[CLEANING 30m]── 20:30
-                                                        ↑
-                                                    Walk-in
-                                                    16:30-20:00
+AVAILABLE   → RESERVED    : Guest nhấn "Thanh toán"
+AVAILABLE   → CLOSED      : Admin đóng phòng thủ công
+AVAILABLE   → MAINTENANCE : Phát hiện hư hỏng
+AVAILABLE   → [*]         : Xóa phòng (soft delete)
+
+RESERVED    → CONFIRMED   : Payment webhook success
+RESERVED    → AVAILABLE    : Payment fail / timeout 10 phút / idempotency retry
+
+CONFIRMED   → CHECKED_IN  : Smartlock unlock thành công
+CONFIRMED   → AVAILABLE    : Hủy / no-show 24h
+CONFIRMED   → BLOCKED      : Admin block property
+
+CHECKED_IN  → CHECKED_OUT : Guest nhấn Check-out
+CHECKED_IN  → AVAILABLE    : Hủy khẩn cấp (emergency)
+
+CHECKED_OUT → CLEANING   : Auto 30 giây sau checkout
+CHECKED_OUT → MAINTENANCE: Phát hiện hư hỏng lúc checkout
+
+CLEANING    → INSPECTING  : Housekeeper nhấn "Done"
+CLEANING    → MAINTENANCE : Phát hiện hư hỏng khi dọn
+
+INSPECTING  → AVAILABLE   : Host/Admin approve
+INSPECTING  → MAINTENANCE : Host phát hiện vấn đề
+
+CLOSED      → AVAILABLE   : Admin mở lại phòng
+CLOSED      → MAINTENANCE : Phát hiện vấn đề khi đóng
+CLOSED      → BLOCKED     : Admin block vì compliance
+CLOSED      → [*]         : Xóa phòng
+
+BLOCKED     → AVAILABLE   : Admin unblock
+
+MAINTENANCE → CLEANING    : Sửa xong cần dọn
+MAINTENANCE → AVAILABLE   : Sửa xong phòng đã sạch
+MAINTENANCE → CHECKED_IN  : Sửa khẩn cấp khi guest đang ở
 ```
 
-**Công thức tính available time (HOURLY):**
+#### 4.1.4 Mô hình DAILY — Check-out Timeline
+
+Với thuê theo ngày, mỗi ngày chỉ có **một booking**. Chu kỳ tuyến tính:
+
 ```
-available_time = last_checkout_time + buffer_minutes
+14:00 Check-in ──[CHECKED_IN]── 12:00 Check-out ──[CHECKED_OUT 30s]──
+──[CLEANING 90m]──[INSPECTING 15m]── 13:45 Available
 ```
 
-**Thuật toán tính tất cả khe giờ trống trong ngày:**
+**Công thức tính available_time (DAILY):**
+```
+available_time = checkout_time
+               + 30s (CHECKED_OUT grace period)
+               + buffer_minutes (CLEANING)
+               + inspecting_minutes (INSPECTING)
+             = 12:00 + 30s + 90 phút + 15 phút
+             = 13:45
+```
+
+#### 4.1.5 Mô hình HOURLY — Check-out Timeline
+
+Với thuê theo giờ, **1 phòng = N booking/ngày**. Mỗi booking tạo một buffer riêng, các buffer có thể **chồng lấn** nếu checkout sớm hơn dự kiến.
+
+```
+Ngày mẫu: Room 101
+08:00-12:00  Booking A ──[CLEANING 30m]── 12:30-15:30  Booking B ──[CLEANING 30m]── 16:00-18:00  Booking C ──[CLEANING 30m]── 18:30-22:00  WALK-IN ──[CLEANING 30m]── 22:00-01:00  Booking D (qua đêm)
+```
+
+**Đặc điểm quan trọng:**
+- Guest tiếp theo có thể check-in **ngay khi** booking trước checkout (back-to-back, không cần đợi buffer)
+- Walk-in có thể đặt khoảng trống giữa các bookings
+- Booking qua đêm tạo 2 partition rows (ngày 1 + ngày 2), cùng booking_id
+- Cron mỗi 5 phút kiểm tra từng booking để tính lại slots trống
+
+**Công thức tính slot trống (mỗi lần có checkout):**
+```
+available_slots = tính lại tất cả slots trong ngày
+                = xử lý back-to-back + walk-in gaps + overnight
+```
+
+#### 4.1.6 Giải thuật `calculateHourlySlots()`
+
+Mỗi khi có checkout, hệ thống phải **tính lại tất cả slot trống** trong ngày để đảm bảo không conflict.
 
 ```typescript
+interface HourlySlot {
+  startTime: string;       // "2026-05-20 08:00:00"
+  endTime: string;         // "2026-05-20 12:00:00"
+  status: RoomStatus;      // AVAILABLE | CHECKED_IN | CLEANING
+  bookingId?: string;
+  price?: number;
+}
+
 function calculateHourlySlots(
   roomId: string,
   date: string,
-  checkouts: CheckoutEvent[],
-  bufferMinutes: number
+  bookings: Booking[],
+  bufferMinutes: number = 30,
 ): HourlySlot[] {
+
+  // 1. Sắp xếp bookings theo check_in_time
+  const sorted = bookings
+    .filter(b => b.checkOutDate === date || b.checkInDate === date)
+    .sort((a, b) => a.checkInTime.localeCompare(b.checkInTime));
+
   const slots: HourlySlot[] = [];
+  const dayStart = date + ' 00:00:00';
+  const dayEnd = date + ' 23:59:59';
 
-  // Sắp xếp checkout theo thời gian
-  const sorted = checkouts.sort((a, b) =>
-    a.checkoutTime.localeCompare(b.checkoutTime));
-
-  // Slot 00:00 - first_checkout - buffer
-  const dayStart = `${date} 00:00:00`;
-  const firstAvailable = subtractMinutes(
-    sorted[0].checkoutTime, bufferMinutes);
-
-  if (firstAvailable > dayStart) {
-    slots.push({ start: dayStart, end: firstAvailable, status: 'AVAILABLE' });
+  // 2. Không có booking nào → cả ngày AVAILABLE
+  if (sorted.length === 0) {
+    return [{ startTime: dayStart, endTime: dayEnd, status: 'AVAILABLE' }];
   }
 
-  // Tạo slot cho mỗi booking
-  sorted.forEach((checkout, i) => {
-    const bufferEnd = addMinutes(checkout.checkoutTime, bufferMinutes);
+  // 3. Slot từ 00:00 → first booking
+  const firstCheckin = sorted[0].checkInTime;
+  const firstCleanEnd = subtractMinutes(firstCheckin, bufferMinutes);
+  if (firstCleanEnd > dayStart) {
+    slots.push({ startTime: dayStart, endTime: firstCleanEnd, status: 'AVAILABLE' });
+  }
 
-    // Slot OCCUPIED
+  // 4. Duyệt từng booking → tạo slot + buffer
+  for (let i = 0; i < sorted.length; i++) {
+    const booking = sorted[i];
+    const nextBooking = sorted[i + 1];
+
+    // Slot BOOKED
     slots.push({
-      start: checkout.checkinTime,
-      end: checkout.checkoutTime,
-      status: 'OCCUPIED',
-      bookingId: checkout.bookingId,
+      startTime: booking.checkInTime,
+      endTime: booking.checkOutTime,
+      status: 'CHECKED_IN',
+      bookingId: booking.id,
+      price: booking.hourlyPrice,
     });
 
-    // Slot CLEANING
+    // Slot CLEANING (sau checkout, trước buffer)
+    const bufferEnd = addMinutes(booking.checkOutTime, bufferMinutes);
     slots.push({
-      start: checkout.checkoutTime,
-      end: bufferEnd,
+      startTime: booking.checkOutTime,
+      endTime: bufferEnd,
       status: 'CLEANING',
-      bookingId: checkout.bookingId,
+      bookingId: booking.id,
     });
 
-    // Slot AVAILABLE tiếp theo
-    const nextCheckout = sorted[i + 1]?.checkoutTime;
-    if (nextCheckout) {
-      const nextAvailable = subtractMinutes(nextCheckout, bufferMinutes);
-      if (bufferEnd < nextAvailable) {
-        slots.push({ start: bufferEnd, end: nextAvailable, status: 'AVAILABLE' });
+    // Khoảng trống AVAILABLE giữa 2 bookings
+    if (nextBooking) {
+      const nextCleanEnd = subtractMinutes(nextBooking.checkInTime, bufferMinutes);
+      if (bufferEnd < nextCleanEnd) {
+        slots.push({ startTime: bufferEnd, endTime: nextCleanEnd, status: 'AVAILABLE' });
       }
-    } else {
-      // Sau booking cuối → available đến 23:59
-      slots.push({ start: bufferEnd, end: `${date} 23:59:59`, status: 'AVAILABLE' });
     }
-  });
+  }
+
+  // 5. Sau booking cuối → AVAILABLE đến 23:59
+  const lastBooking = sorted[sorted.length - 1];
+  const lastBufferEnd = addMinutes(lastBooking.checkOutTime, bufferMinutes);
+  if (lastBufferEnd < dayEnd) {
+    slots.push({ startTime: lastBufferEnd, endTime: dayEnd, status: 'AVAILABLE' });
+  }
 
   return slots;
 }
 ```
 
-#### 4.1.5 So sánh DAILY vs HOURLY
+#### 4.1.7 So sánh DAILY vs HOURLY
 
-| Khía cạnh | DAILY | HOURLY |
-|-----------|-------|--------|
-| Số booking/ngày | 1 (hoặc 0) | Nhiều (1-24) |
-| Buffer tính toán | 1 lần/ngày | N lần (mỗi checkout) |
-| Partition key | `DATE` là đủ | Cần `(DATE, START_TIME)` |
-| Slot generation | Tự động khi tạo booking | Cron mỗi 15 phút hoặc event-driven |
-| Overlap check | 1 row/ngày, đơn giản | Nhiều row, cần kiểm tra từng khe |
-| Walk-in support | Không phổ biến | **Rất phổ biến** — slot trống giữa bookings |
-| Overnight booking | Không áp dụng | Cần tạo slots cho 2 ngày liền kề |
+| Tiêu chí | DAILY | HOURLY |
+|----------|-------|--------|
+| Số booking/ngày | 1 | N |
+| Công thức available | checkout + buffer + inspecting | calculateHourlySlots() |
+| Buffer giữa bookings | 1 buffer cố định | N buffers, có thể overlap |
+| Back-to-back | Không áp dụng | ✅ Có thể guest kế tiếp vào ngay |
+| Walk-in | Không hỗ trợ | ✅ Đặt được khoảng trống |
+| Extend stay | Không | ✅ Tính lại slots + giá |
+| Overnight booking | Không | ✅ Tạo 2 partition rows |
+| Cron kiểm tra | Mỗi 5 phút | Mỗi 5 phút + recalculate |
 
-#### 4.1.6 State Transition Guard — Bảo vệ Admin Status Change
+#### 4.1.8 Quy tắc Guard — Kiểm tra trước khi chuyển trạng thái
 
-Khi Admin/Host thay đổi trạng thái phòng (VD: CLOSED), hệ thống phải kiểm tra **không có booking đang active**:
+Trước khi thực hiện bất kỳ state transition nào, hệ thống phải kiểm tra:
 
-```sql
--- CHECK trước khi cho phép đóng phòng
-CREATE OR REPLACE FUNCTION fn_check_before_status_change()
-RETURNS TRIGGER AS $$
-DECLARE
-  active_bookings INT;
-BEGIN
-  IF NEW.status = 'CLOSED' AND OLD.status != 'CLOSED' THEN
-    SELECT COUNT(*) INTO active_bookings
-    FROM slot_bookings sb
-    JOIN room_availability ra ON ra.id = sb.availability_slot_id
-    WHERE ra.room_id = NEW.room_id
-      AND ra.date = NEW.date
-      AND sb.status IN ('PENDING_PAYMENT', 'CONFIRMED', 'CHECKED_IN');
-
-    IF active_bookings > 0 THEN
-      RAISE EXCEPTION 'Cannot close room: % active bookings exist', active_bookings;
-    END IF;
-  END IF;
-
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trg_room_status_guard
-BEFORE UPDATE ON room_availability
-FOR EACH ROW EXECUTE FUNCTION fn_check_before_status_change();
+```
+AVAILABLE → RESERVED  : Kiểm tra slot còn trống (inventory check)
+AVAILABLE → CLOSED   : Kiểm tra không có PENDING/CONFIRMED/CHECKED_IN booking
+AVAILABLE → MAINTENANCE: Kiểm tra không có guest đang ở
+RESERVED  → CONFIRMED : Kiểm tra thanh toán thành công (payment_id)
+CONFIRMED → CHECKED_IN : Kiểm tra đã đến giờ check-in (check_in_time <= now)
+CONFIRMED → AVAILABLE : Kiểm tra hủy trước giờ check-in hoặc no-show 24h
+CHECKED_OUT → CLEANING: Kiểm tra không có hư hỏng mới phát hiện
+CLEANING → INSPECTING: Kiểm tra housekeeper đã nhấn "Done"
+INSPECTING → AVAILABLE: Kiểm tra Host/Admin đã approve
+CLOSED → AVAILABLE   : Kiểm tra không có booking nào active
 ```
 
-#### 4.1.7 Cron Job — Tự động chuyển CLEANING → AVAILABLE
+**Nguyên tắc vàng:** Transition nào cũng phải có trigger rõ ràng. Không transition tự động không có điều kiện.
 
-Vì `buffer_minutes` có thể kết thúc vào lúc **bất kỳ thời điểm nào** (không trùng với cron), cần chạy cron **mỗi 5 phút** để phát hiện các slot đã hết buffer:
+#### 4.1.9 Cron Job — Tự Động Chuyển Trạng thái
+
+Hệ thống chạy 3 cron jobs để đảm bảo trạng thái luôn chính xác:
+
+**Cron 1: EVERY_5_MINUTES — CLEANING → AVAILABLE**
+- Kiểm tra tất cả rooms có `status = CLEANING`
+- Nếu `now >= checkout_time + buffer_minutes` → chuyển `INSPECTING`
+- Nếu `INSPECTING` quá 15 phút không approve → tự động chuyển `AVAILABLE`
+
+**Cron 2: EVERY_10_MINUTES — PENDING_PAYMENT timeout**
+- Quét `bookings` có `status = PENDING_PAYMENT`
+- Nếu `created_at + 10 phút < now` → chuyển `CANCELLED`, giải phóng inventory
+
+**Cron 3: EVERY_15_MINUTES — INSPECTING auto-approve**
+- Quét `room_availability` có `status = INSPECTING`
+- Nếu `updated_at + 15 phút < now` → chuyển `AVAILABLE`
 
 ```typescript
-// Cron: every 5 minutes
 @Cron(CronExpression.EVERY_5_MINUTES)
-async releaseExpiredCleaningSlots() {
+async processCleaningSlots() {
   const now = new Date();
 
-  // Tìm tất cả slot đang CLEANING mà buffer đã hết
-  const expiredSlots = await this.prisma.$queryRaw<RoomAvailability[]>`
-    SELECT ra.* FROM room_availability ra
+  // CLEANING → INSPECTING: buffer đã hết
+  const cleaningDone = await this.prisma.$queryRaw`
+    SELECT ra.*, sb.check_out_at
+    FROM room_availability ra
     JOIN slot_bookings sb ON sb.availability_slot_id = ra.id
     WHERE ra.status = 'CLEANING'
-      AND sb.checkout_time + (ra.buffer_minutes || ' minutes')::interval < ${now}
+      AND sb.check_out_at + (ra.buffer_minutes || ' minutes')::interval <= ${now}
   `;
 
-  for (const slot of expiredSlots) {
-    await this.prisma.$transaction(async (tx) => {
-      // Chuyển CLEANING → AVAILABLE
-      await tx.roomAvailability.update({
-        where: { id: slot.id },
-        data: {
-          status: 'AVAILABLE',
-          updatedAt: now,
-        },
-      });
-
-      // Gửi event cho OTA sync
-      await tx.roomBookingEvents.create({
-        data: {
-          eventType: 'CLEANING_COMPLETED',
-          roomId: slot.roomId,
-          slotId: slot.id,
-          payload: { previousStatus: 'CLEANING', newStatus: 'AVAILABLE' },
-          status: 'PENDING',
-        },
-      });
+  for (const slot of cleaningDone) {
+    await this.prisma.roomAvailability.update({
+      where: { id: slot.id },
+      data: { status: 'INSPECTING', updatedAt: now },
     });
+    await this.cache.del(`availability:${slot.roomId}:${slot.date}`);
+  }
 
-    // Invalidate cache + push OTA
-    await this.cacheService.del(`availability:${slot.roomId}:${slot.date}`);
-    await this.otaSyncService.pushSlotUpdate(slot);
+  // INSPECTING → AVAILABLE: quá 15 phút
+  const inspectingExpired = await this.prisma.$queryRaw`
+    SELECT ra.*
+    FROM room_availability ra
+    WHERE ra.status = 'INSPECTING'
+      AND ra.updated_at < ${subMinutes(now, 15)}
+  `;
+
+  for (const slot of inspectingExpired) {
+    await this.prisma.roomAvailability.update({
+      where: { id: slot.id },
+      data: { status: 'AVAILABLE', updatedAt: now },
+    });
+    await this.cache.del(`availability:${slot.roomId}:${slot.date}`);
+    await this.otaSync.pushSlotUpdate(slot.roomId, slot.date);
   }
 }
 ```
 
-#### 4.1.8 5 Edge Cases đặc biệt của HOURLY
+#### 4.1.10 5 Edge Cases Đặc biệt (HOURLY)
 
-**1. Back-to-Back Booking (đặt liền):**
-- Guest A checkout 12:00. Guest B đã đặt từ 12:00.
-- Logic: `checkout + buffer <= next_booking_start` → không cần buffer, chuyển OCCUPIED ngay cho B.
+**6a. Back-to-Back — Không cần đợi buffer**
 
-**2. Walk-in trong thời gian CLEANING:**
-- Phòng đang CLEANING 12:00-12:30. Walk-in đến 12:15 muốn đặt 12:30.
-- Logic: Nếu `now >= 12:00` → cho phép walk-in từ thời điểm hiện tại. Không cần đợi hết 30 phút buffer.
+```
+Booking A: 10:00 → 12:00
+Booking B: 12:00 → 14:00 (đặt trước khi A checkout)
+```
 
-**3. Overlapping Booking (đặt trùng giờ):**
-- Đã có booking 10:00-14:00. Guest mới đặt 12:00-16:00.
-- Logic: Kiểm tra tất cả slots trong khoảng 12:00-16:00. Phát hiện overlap → reject.
+```
+Logic: checkout_A + buffer <= checkin_B
+       12:00 + 30 phút <= 12:00  → FALSE
 
-**4. Extend Stay (kéo dài thời gian):**
-- Guest đặt 10:00-12:00, muốn kéo dài đến 14:00.
-- Logic: Kiểm tra slots 12:00-14:00. Nếu slot 13:00 bị booking khác giữ → chỉ offer đến 13:00.
+→ Không tạo AVAILABLE slot. Booking B vào CHECKED_IN ngay 12:00.
+→ Tránh lãng phí thời gian chờ buffer khi đã biết có guest tiếp theo.
+```
 
-**5. Overnight HOURLY (qua đêm):**
-- Guest đặt 22:00 ngày 1 đến 06:00 ngày 2.
-- Logic: Tạo 2 partition rows — một cho ngày 1 (22:00-24:00), một cho ngày 2 (00:00-06:00). Tổng giá = sum của cả 2 slot.
+**6b. Walk-in trong thời gian CLEANING**
 
----
+```
+Đang CLEANING: 12:00 → 12:30
+Walk-in đến: 12:15, muốn đặt 12:30
+```
+
+```
+Logic:
+  if now >= buffer_start_time:
+    → Cho phép booking từ thời điểm hiện tại
+    → Slot 12:15 trở đi = AVAILABLE
+
+Kết quả:
+  12:00 → 12:15  : CLEANING (không cho booking)
+  12:15 → ...    : AVAILABLE (walk-in được đặt)
+```
+
+**6c. Overlapping Booking — Đặt trùng giờ**
+
+```
+Đã có: Booking 10:00 → 14:00
+Guest mới: Muốn đặt 12:00 → 16:00
+```
+
+```
+Logic: Kiểm tra tất cả slots trong khoảng 12:00 → 16:00
+
+  12:00-13:59 → CHECKED_IN (trùng)
+  14:00-14:59 → AVAILABLE (sau booking cũ)
+  15:00-15:59 → AVAILABLE
+
+→ Reject: 12:00-13:59 bị giữ bởi booking khác
+→ Offer: 14:00 → 16:00 (nếu trống)
+```
+
+**6d. Extend Stay — Kéo dài thời gian ở**
+
+```
+Guest đặt: 10:00 → 12:00, đang ở
+Muốn kéo dài: → 14:00
+```
+
+```
+Logic:
+  1. Kiểm tra slots 12:00 → 14:00
+  2. Nếu slot bị booking khác giữ:
+     → Chỉ offer đến thời điểm conflict bắt đầu
+  3. Tính giá thêm: (14:00 - 12:00) × hourly_price
+  4. UPDATE booking: check_out_time = 14:00
+```
+
+**6e. Overnight HOURLY — Booking qua đêm**
+
+```
+Guest đặt: 22:00 ngày 1 → 06:00 ngày 2
+```
+
+```
+Logic:
+  1. Tạo 2 partition rows:
+     - Ngày 1: slot 22:00 → 24:00
+     - Ngày 2: slot 00:00 → 06:00
+  2. Gán cùng một booking_id cho cả 2 rows
+  3. Tổng giá = sum(price_override của 2 slots)
+  4. Checkout = 06:00 ngày 2 → buffer = 06:30 ngày 2
+```
 
 ### 4.2 Atomic UPDATE — Công Thức Chống Overbooking
 

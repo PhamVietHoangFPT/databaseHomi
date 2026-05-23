@@ -494,30 +494,45 @@ flowchart LR
 
 ## 5. Room Status After Check-out
 
-### 5a. Complete Room Status State Machine
+### 5a. Complete Room Status State Machine (10 States)
 
 ```mermaid
 stateDiagram-v2
     [*] --> AVAILABLE: Room created
-    AVAILABLE --> PENDING: Booking submitted (PENDING_PAYMENT)
-    AVAILABLE --> BOOKED: Payment confirmed (CONFIRMED)
-    PENDING --> AVAILABLE: Payment failed/cancelled
-    PENDING --> BOOKED: Payment confirmed
-    PENDING --> AVAILABLE: Idempotency retry detected
-    BOOKED --> OCCUPIED: Guest checks in
-    BOOKED --> CANCELLED: Booking cancelled before check-in
-    BOOKED --> AVAILABLE: Payment expired (10min timeout)
-    OCCUPIED --> CLEANING: Guest checks out
-    OCCUPIED --> CANCELLED: Emergency cancellation
-    CLEANING --> AVAILABLE: Housekeeping done
-    CLEANING --> MAINTENANCE: Damage found
-    AVAILABLE --> CLOSED: Admin closes room
+
+    AVAILABLE --> RESERVED: Guest clicks Pay
+    AVAILABLE --> CLOSED: Host closes room
     AVAILABLE --> MAINTENANCE: Issue detected
-    CLOSED --> AVAILABLE: Admin reopens room
+
+    RESERVED --> CONFIRMED: Payment success
+    RESERVED --> AVAILABLE: Payment failed / timeout
+
+    CONFIRMED --> CHECKED_IN: Smartlock unlocked
+    CONFIRMED --> AVAILABLE: Cancelled / no-show 24h
+
+    CHECKED_IN --> CHECKED_OUT: Guest taps Check-out
+    CHECKED_IN --> AVAILABLE: Emergency cancellation
+
+    CHECKED_OUT --> CLEANING: Auto 30s after checkout
+    CHECKED_OUT --> MAINTENANCE: Damage found at checkout
+
+    CLEANING --> INSPECTING: Housekeeper marks done
+    CLEANING --> MAINTENANCE: Damage found during cleaning
+
+    INSPECTING --> AVAILABLE: Host approves
+    INSPECTING --> MAINTENANCE: Host finds issue
+
+    MAINTENANCE --> CLEANING: Repairs done needs cleaning
+    MAINTENANCE --> AVAILABLE: Repairs done room clean
+    MAINTENANCE --> CHECKED_IN: Emergency fix while guest in room
+
+    CLOSED --> AVAILABLE: Host reopens room
     CLOSED --> MAINTENANCE: Issue found during closure
-    MAINTENANCE --> AVAILABLE: Repairs completed
-    MAINTENANCE --> CLEANING: Quick fix done
+    CLOSED --> BLOCKED: Admin blocks compliance issue
     CLOSED --> [*]: Room permanently deleted
+
+    BLOCKED --> AVAILABLE: Admin unblocks
+
     AVAILABLE --> [*]: Room deleted
 ```
 
@@ -607,18 +622,22 @@ flowchart TD
 
     subgraph StatusEnum[Status Values]
         ST1[AVAILABLE: slot visible and bookable]
-        ST2[CLEANING: buffer time in progress]
-        ST3[PENDING: slot reserved by PENDING_PAYMENT booking]
-        ST4[BOOKED: slot reserved by CONFIRMED booking]
-        ST5[CLOSED: manual admin closure]
-        ST6[OCCUPIED: guest currently in room]
+        ST2[RESERVED: slot held by PENDING_PAYMENT]
+        ST3[CONFIRMED: payment success check-in pending]
+        ST4[CHECKED_IN: guest currently in room]
+        ST5[CHECKED_OUT: guest checked out cleaning pending]
+        ST6[CLEANING: housekeeping in progress]
+        ST7[INSPECTING: awaiting host approval]
+        ST8[CLOSED: manual admin closure]
+        ST9[MAINTENANCE: repair in progress]
+        ST10[BLOCKED: compliance or policy block]
     end
 
     subgraph HOURLYSpecial[HOURLY-Specific Rules]
         H1[For HOURLY: recalculate ALL future slots for that date]
         H2[For DAILY: only one slot per date — update once]
         H1 --> H3[Generate hourly slots from 00:00 to 23:59]
-        H3 --> H4[Each slot: start_time, end_time, status, price_override]
+        H3 --> H4[Each slot: start_time end_time status price_override]
         H4 --> H5[Adjacent CLEANING slots merge visually as single block]
     end
 
@@ -657,7 +676,7 @@ sequenceDiagram
         Room_Service-->>Host: 409 Conflict N active bookings exist
     else active_count equals 0
         Room_Service->>Room_DB: UPDATE room_availability SET status = CLOSED
-        Room_Service->>Room_DB: INSERT room_booking_events (ROOM_STATUS_CHANGED)
+        Room_Service->>Room_DB: INSERT room_booking_events (ROOM_CLOSED)
         Room_Service->>Room_DB: COMMIT
         Room_Service-->>Host: 200 OK Room closed
         Room_Service->>Message_Broker: Publish ROOM_STATUS_CHANGED
@@ -669,10 +688,10 @@ sequenceDiagram
 ```mermaid
 flowchart TD
     subgraph BackToBack[Edge Case 1: Back-to-Back Booking]
-        B1[Guest A checks out at 12:00]
+        B1[Guest A CHECKED_OUT at 12:00]
         B2[Guest B already CONFIRMED for 12:00]
         B1 --> B3{checkout_time + buffer le next_booking_start?}
-        B3 -->|Yes no buffer needed| B4[Slot immediately = OCCUPIED for B]
+        B3 -->|Yes no buffer needed| B4[Slot immediately = CHECKED_IN for B]
         B3 -->|No gap needed| B5[Insert CLEANING slot 12:00 to 12:30]
     end
 
@@ -681,7 +700,7 @@ flowchart TD
         W2[Walk-in arrives 12:15 wants room 12:30 to 16:30]
         W2 --> W3{Is slot at 12:30 still CLEANING?}
         W3 -->|Yes cleaning not done| W4[Show estimated available: 12:30]
-        W3 -->|No buffer passed| W5[Slot is OPEN — allow booking]
+        W3 -->|No buffer passed| W5[Slot is AVAILABLE — allow booking]
     end
 
     subgraph Overlap[Edge Case 3: Overlapping HOURLY Bookings]
