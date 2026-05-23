@@ -1,41 +1,41 @@
-# Research and Design of Synchronized Booking System
+# Nghiên Cứu và Thiết Kế Hệ Thống Đồng Bộ Đặt Phòng
 
-**Purpose:** Ensure room status is always synchronized with payment and booking state. When Host/Admin changes room status manually, the system must prevent unsafe transitions that would leave paid guests stranded.
+**Mục đích:** Đảm bảo trạng thái phòng luôn đồng bộ với trạng thái thanh toán và booking. Khi Host/Admin thay đổi trạng thái phòng thủ công từ Sẵn sàng sang Đóng hoặc ngược lại, hệ thống phải ngăn chặn các chuyển đổi không an toàn khiến khách đã thanh toán bị mất phòng.
 
-**Generated:** 2026-05-23 — Homi 1.0
+**Ngày tạo:** 2026-05-23 — Homi 1.0
 
 ---
 
-## 1. The 3-Layer Synchronization Model
+## 1. Mô Hình Đồng Bộ 3 Tầng
 
-The system has **three independent but synchronized layers**. All three must be consistent at all times.
+Hệ thống có **3 tầng độc lập nhưng phải đồng bộ với nhau**. Cả 3 tầng phải luôn nhất quán tại mọi thời điểm.
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                    LAYER 1                          │
-│                 rooms table                         │
-│  Room configuration and manual status control       │
+│                    TẦNG 1                           │
+│                 Bảng rooms                          │
+│  Cấu hình phòng và kiểm soát trạng thái thủ công    │
 │  (AVAILABLE, CLOSED, MAINTENANCE, BLOCKED)          │
 └─────────────────────┬───────────────────────────────┘
-                      │ drives
+                      │ driving
 ┌─────────────────────▼───────────────────────────────┐
-│                    LAYER 2                          │
-│            room_availability table                  │
-│  Daily/hourly inventory slots with real-time count  │
+│                    TẦNG 2                           │
+│              Bảng room_availability                 │
+│  Inventory slot theo ngày/giờ với số lượng thực     │
 │  (OPEN, CLOSED, BLOCKED + booked/on_hold units)     │
 └─────────────────────┬───────────────────────────────┘
                       │ used by
 ┌─────────────────────▼───────────────────────────────┐
-│                    LAYER 3                          │
-│               bookings table                        │
-│  Individual guest reservations with payment state   │
-│  (PENDING_PAYMENT, CONFIRMED, CHECKED_IN, etc.)     │
+│                    TẦNG 3                           │
+│               Bảng bookings                         │
+│  Đặt phòng của từng khách với trạng thái thanh toán │
+│  (PENDING_PAYMENT, CONFIRMED, CHECKED_IN, v.v.)     │
 └─────────────────────────────────────────────────────┘
 ```
 
-**Golden rule:** Layer 1 is the source of truth for room-level control. Layers 2 and 3 are derived from Layer 1 and guest actions.
+**Quy tắc vàng:** Tầng 1 là nguồn chân lý cho kiểm soát cấp phòng. Tầng 2 và 3 được suy ra từ Tầng 1 và hành động của khách.
 
-### Layer 1 — `rooms` table: The Gatekeeper
+### Tầng 1 — Bảng `rooms`: Người gác cổng
 
 ```sql
 CREATE TABLE rooms (
@@ -50,9 +50,9 @@ CREATE TABLE rooms (
 );
 ```
 
-Layer 1 controls the **physical availability** of the room. Changing it affects future bookings only — it does NOT automatically cancel existing bookings.
+Tầng 1 kiểm soát **tính khả dụng vật lý** của phòng. Thay đổi Tầng 1 chỉ ảnh hưởng đến các booking tương lai — nó **KHÔNG** tự động hủy các booking hiện có.
 
-### Layer 2 — `room_availability` table: The Inventory
+### Tầng 2 — Bảng `room_availability`: Kho inventory
 
 ```sql
 CREATE TABLE room_availability (
@@ -74,9 +74,9 @@ CREATE TABLE room_availability (
 );
 ```
 
-Layer 2 tracks **per-day and per-hour slot inventory**. The `status` here mirrors `rooms.status` but is per-slot.
+Tầng 2 theo dõi **inventory slot theo ngày và theo giờ**. Trạng thái `status` ở đây phản chiếu `rooms.status` nhưng theo từng slot.
 
-### Layer 3 — `bookings` table: The Guest Intent
+### Tầng 3 — Bảng `bookings`: Ý định của khách
 
 ```sql
 CREATE TABLE bookings (
@@ -95,120 +95,120 @@ CREATE TABLE bookings (
 );
 ```
 
-Layer 3 represents **actual guest reservations**. Changing Layer 1 must never break Layer 3 consistency.
+Tầng 3 đại diện cho **đặt phòng thực tế của khách**. Thay đổi Tầng 1 không được phép phá vỡ tính nhất quán của Tầng 3.
 
 ---
 
-## 2. The Synchronization Matrix
+## 2. Ma Trận Đồng Bộ
 
-Each layer's status maps to the others. This matrix is the **contract** the system must maintain.
+Trạng thái giữa các tầng ánh xạ vào nhau. Ma trận này là **hợp đồng** mà hệ thống phải duy trì.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│                    SYNCHRONIZATION MATRIX                                │
+│                    MA TRẬN ĐỒNG BỘ                                       │
 │                                                                          │
-│  rooms.status         room_availability.status   bookings.status         │
+│  rooms.status           room_availability.status    bookings.status      │
 │  ─────────────────────────────────────────────────────────────────────   │
-│  AVAILABLE           OPEN                        Any (including future)  │
-│  CLOSED              CLOSED                      Only: CANCELLED/        │
-│                                                    EXPIRED/COMPLETED     │
-│  MAINTENANCE         CLOSED                      Same as CLOSED          │
-│  BLOCKED             BLOCKED                     Same as CLOSED          │
+│  AVAILABLE             OPEN                      Bất kỳ (kể cả tương lai)│
+│  CLOSED                CLOSED                       Chỉ: CANCELLED/      │
+│                                                       EXPIRED/COMPLETED  │
+│  MAINTENANCE          CLOSED                       Như CLOSED            │
+│  BLOCKED              BLOCKED                      Như CLOSED            │
 │                                                                          │
-│  INVARIANT: If rooms.status != AVAILABLE                                 │
-│             → room_availability.status == CLOSED or BLOCKED              │
-│             → bookings.status can only be terminal states                │
+│  BẤT BIẾN: Nếu rooms.status != AVAILABLE                                 │
+│            → room_availability.status == CLOSED hoặc BLOCKED             │
+│            → bookings.status chỉ có thể là trạng thái kết thúc           │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Detailed Status Mapping
+### Bảng ánh xạ chi tiết
 
-| rooms.status | room_availability.status | bookings.status allowed | Bookable? |
+| rooms.status | room_availability.status | bookings.status cho phép | Có thể đặt? |
 |---|---|---|---|
-| `AVAILABLE` | `OPEN` | Any | ✅ Yes |
-| `CLOSED` | `CLOSED` | `CANCELLED`, `EXPIRED`, `COMPLETED` | ❌ No |
-| `MAINTENANCE` | `CLOSED` | `CANCELLED`, `EXPIRED`, `COMPLETED` | ❌ No |
-| `BLOCKED` | `BLOCKED` | `CANCELLED`, `EXPIRED`, `COMPLETED` | ❌ No |
+| `AVAILABLE` | `OPEN` | Bất kỳ | ✅ Có |
+| `CLOSED` | `CLOSED` | `CANCELLED`, `EXPIRED`, `COMPLETED` | ❌ Không |
+| `MAINTENANCE` | `CLOSED` | `CANCELLED`, `EXPIRED`, `COMPLETED` | ❌ Không |
+| `BLOCKED` | `BLOCKED` | `CANCELLED`, `EXPIRED`, `COMPLETED` | ❌ Không |
 
-**Rule:** When `rooms.status` becomes non-AVAILABLE, the system must ensure all non-terminal bookings are either cancelled (with refund) or completed before the status change takes effect.
+**Quy tắc:** Khi `rooms.status` trở thành không phải AVAILABLE, hệ thống phải đảm bảo tất cả booking không phải trạng thái kết thúc phải được hủy (kèm hoàn tiền) hoặc hoàn thành trước khi thay đổi trạng thái có hiệu lực.
 
 ---
 
-## 3. Guard Conditions — Before Changing Room Status
+## 3. Điều Kiện Guard — Trước Khi Thay Đổi Trạng Thái Phòng
 
-This is the **most critical section**. Any manual status change must pass these guards.
+Đây là **phần quan trọng nhất**. Bất kỳ thay đổi trạng thái thủ công nào cũng phải vượt qua các guard này.
 
-### 3a. Closing a Room (AVAILABLE → CLOSED)
+### 3a. Đóng Phòng (AVAILABLE → CLOSED)
 
 ```sql
--- GUARD QUERIES — ALL must return 0 active bookings
+-- CÂU TRUY VẤN GUARD — TẤT CẢ phải trả về 0 booking đang hoạt động
 
--- Check 1: No PENDING_PAYMENT bookings
+-- Kiểm tra 1: Không có booking PENDING_PAYMENT
 SELECT COUNT(*) FROM bookings
 WHERE room_id = :roomId
   AND status = 'PENDING_PAYMENT';
 
--- Check 2: No CONFIRMED future bookings
+-- Kiểm tra 2: Không có booking CONFIRMED trong tương lai
 SELECT COUNT(*) FROM bookings
 WHERE room_id = :roomId
   AND status = 'CONFIRMED'
   AND (check_in_date > :today OR (check_in_date = :today AND check_in_time > :now));
 
--- Check 3: No CHECKED_IN (guest currently inside)
+-- Kiểm tra 3: Không có CHECKED_IN (khách đang ở trong phòng)
 SELECT COUNT(*) FROM bookings
 WHERE room_id = :roomId
   AND status = 'CHECKED_IN';
 
--- Check 4: No RESERVED (PENDING_PAYMENT) on any future slot
+-- Kiểm tra 4: Không có PENDING_PAYMENT trên bất kỳ slot nào trong tương lai
 SELECT COUNT(*) FROM room_availability ra
 JOIN bookings b ON b.room_id = ra.room_id
 WHERE ra.room_id = :roomId
   AND ra.date >= :today
   AND b.status = 'PENDING_PAYMENT';
 
--- Check 5: room_availability slots are free
+-- Kiểm tra 5: Các slot trong room_availability đang trống
 SELECT COUNT(*) FROM room_availability
 WHERE room_id = :roomId
   AND date >= :today
   AND (booked_units > 0 OR on_hold_units > 0);
 ```
 
-**All 5 guards must pass (count = 0).** If any guard fails, the status change is REJECTED with a detailed error.
+**Tất cả 5 guard phải pass (count = 0).** Nếu bất kỳ guard nào fail, thay đổi trạng thái sẽ bị TỪ CHỐI kèm lỗi chi tiết.
 
-### 3b. Reopening a Room (CLOSED/MAINTENANCE/BLOCKED → AVAILABLE)
+### 3b. Mở Lại Phòng (CLOSED/MAINTENANCE/BLOCKED → AVAILABLE)
 
 ```sql
--- GUARD QUERIES — ALL must return 0 terminal conflicts
+-- CÂU TRUY VẤN GUARD — TẤT CẢ phải trả về 0 xung đột
 
--- Check 1: No active bookings blocking reopening
+-- Kiểm tra 1: Không có booking đang hoạt động chặn việc mở lại
 SELECT COUNT(*) FROM bookings
 WHERE room_id = :roomId
   AND status NOT IN ('CANCELLED', 'EXPIRED', 'COMPLETED');
 
--- Reopening is simpler — just ensure no active bookings
--- room_availability slots will be re-opened automatically
+-- Mở lại đơn giản hơn — chỉ cần đảm bảo không có booking đang hoạt động
+-- Các slot trong room_availability sẽ được mở lại tự động
 ```
 
-No active booking = safe to reopen.
+Không có booking đang hoạt động = an toàn để mở lại.
 
-### 3c. Putting Room into MAINTENANCE
+### 3c. Đưa Phòng Vào MAINTENANCE
 
 ```sql
--- Special case: MAINTENANCE allows guest to stay until natural checkout
--- But prevents NEW bookings from being confirmed
+-- Trường hợp đặc biệt: MAINTENANCE cho phép khách đang ở tiếp tục ở đến khi checkout tự nhiên
+-- Nhưng ngăn chặn booking MỚI được CONFIRMED
 
--- Check 1: Forbid new CONFIRMED bookings (prevent future commitments)
+-- Kiểm tra 1: Cấm booking CONFIRMED mới (ngăn chặn cam kết trong tương lai)
 SELECT COUNT(*) FROM bookings
 WHERE room_id = :roomId
   AND status = 'CONFIRMED'
   AND check_in_date >= :today;
 
--- Check 2: MAINTENANCE does NOT require CHECKED_IN to be empty
--- (guest can stay until checkout, then room goes to MAINTENANCE)
--- BUT: cannot transition to MAINTENANCE if MAJOR damage
--- requiring immediate evacuation — handled by emergency flow
+-- Kiểm tra 2: MAINTENANCE KHÔNG yêu cầu CHECKED_IN phải rỗng
+-- (khách có thể ở đến khi checkout, sau đó phòng vào MAINTENANCE)
+-- NHƯNG: không thể chuyển sang MAINTENANCE nếu có hư hỏng nghiêm trọng
+-- cần sơ tán ngay lập tức — xử lý bằng luồng khẩn cấp
 
--- Action: Also cancel all PENDING_PAYMENT and future CONFIRMED
+-- Hành động: Hủy tất cả PENDING_PAYMENT và CONFIRMED tương lai
 UPDATE bookings
 SET status = 'CANCELLED',
     cancellation_reason = 'MAINTENANCE',
@@ -218,39 +218,39 @@ WHERE room_id = :roomId
   AND check_in_date >= :today;
 ```
 
-### 3d. Blocking a Room (AVAILABLE → BLOCKED)
+### 3d. Khóa Phòng (AVAILABLE → BLOCKED)
 
 ```sql
--- BLOCKED: Compliance/legal reason — most restrictive
+-- BLOCKED: Lý do tuân thủ/pháp lý — hạn chế nhất
 
--- ALL non-terminal bookings must be cancelled
+-- TẤT CẢ booking không phải trạng thái kết thúc phải được hủy
 SELECT COUNT(*) FROM bookings
 WHERE room_id = :roomId
   AND status NOT IN ('CANCELLED', 'EXPIRED', 'COMPLETED');
 
--- BLOCKED is irreversible until Admin resolves the compliance issue
--- Refund logic triggered for all cancelled bookings
+-- BLOCKED không thể đảo ngược cho đến khi Admin giải quyết vấn đề tuân thủ
+-- Logic hoàn tiền được kích hoạt cho tất cả booking bị hủy
 ```
 
 ---
 
-## 4. Atomic Status Change Procedure
+## 4. Thủ Tục Thay Đổi Trạng Thái Nguyên Tử
 
-All status changes must be executed in a **single database transaction** with row-level locking.
+Tất cả thay đổi trạng thái phải được thực thi trong **một giao dịch database duy nhất** với row-level locking.
 
-### 4a. Close Room — Complete Procedure
+### 4a. Đóng Phòng — Thủ Tục Hoàn Chỉnh
 
 ```typescript
 async function closeRoom(roomId: string, reason: string): Promise<Result> {
   return await this.prisma.$transaction(async (tx) => {
 
-    // Step 1: Lock the room row
+    // Bước 1: Khóa row của phòng
     const room = await tx.$queryRaw<Room>`
       SELECT * FROM rooms WHERE id = ${roomId} FOR UPDATE
     `;
     if (!room) throw new NotFoundError('Room not found');
 
-    // Step 2: Run all guard checks
+    // Bước 2: Chạy tất cả guard checks
     const [pendingPayment, confirmedFuture, checkedIn, activeSlots]
       = await Promise.all([
         tx.booking.count({
@@ -279,21 +279,21 @@ async function closeRoom(roomId: string, reason: string): Promise<Result> {
       ]);
 
     if (pendingPayment > 0)
-      throw new GuardFailed('PENDING_PAYMENT bookings exist', pendingPayment);
+      throw new GuardFailed('Tồn tại booking PENDING_PAYMENT', pendingPayment);
     if (confirmedFuture > 0)
-      throw new GuardFailed('CONFIRMED future bookings exist', confirmedFuture);
+      throw new GuardFailed('Tồn tại booking CONFIRMED trong tương lai', confirmedFuture);
     if (checkedIn > 0)
-      throw new GuardFailed('Guest is currently CHECKED_IN', checkedIn);
+      throw new GuardFailed('Khách đang CHECKED_IN', checkedIn);
     if (activeSlots > 0)
-      throw new GuardFailed('Active availability slots exist', activeSlots);
+      throw new GuardFailed('Tồn tại slot đang có booking', activeSlots);
 
-    // Step 3: Update rooms.status
+    // Bước 3: Cập nhật rooms.status
     await tx.room.update({
       where: { id: roomId },
       data: { status: 'CLOSED', updatedAt: new Date() },
     });
 
-    // Step 4: Close all future availability slots
+    // Bước 4: Đóng tất cả slot trong tương lai
     await tx.roomAvailability.updateMany({
       where: {
         roomId,
@@ -302,7 +302,7 @@ async function closeRoom(roomId: string, reason: string): Promise<Result> {
       data: { status: 'CLOSED', updatedAt: new Date() },
     });
 
-    // Step 5: Create audit event
+    // Bước 5: Tạo audit event
     await tx.roomStatusEvents.create({
       data: {
         eventType: 'ROOM_CLOSED',
@@ -325,14 +325,14 @@ async function closeRoom(roomId: string, reason: string): Promise<Result> {
 
     return { success: true, newStatus: 'CLOSED' };
   }, {
-    isolationLevel: 'SERIALIZABLE',  // Strongest isolation for critical operation
+    isolationLevel: 'SERIALIZABLE',
   });
 }
 ```
 
-**Why SERIALIZABLE?** This operation touches multiple tables. `READ COMMITTED` could allow a race condition where a booking is confirmed between the guard check and the update. `SERIALIZABLE` makes the transaction retry if any concurrent change invalidates the guards.
+**Tại sao SERIALIZABLE?** Thao tác này touch nhiều bảng. `READ COMMITTED` có thể cho phép race condition khi booking được confirm giữa guard check và update. `SERIALIZABLE` khiến transaction retry nếu bất kỳ thay đổi đồng thời nào làm guard không hợp lệ.
 
-### 4b. Reopen Room — Complete Procedure
+### 4b. Mở Lại Phòng — Thủ Tục Hoàn Chỉnh
 
 ```typescript
 async function reopenRoom(roomId: string, reason: string): Promise<Result> {
@@ -342,7 +342,7 @@ async function reopenRoom(roomId: string, reason: string): Promise<Result> {
       SELECT * FROM rooms WHERE id = ${roomId} FOR UPDATE
     `;
 
-    // Guard: No active bookings
+    // Guard: Không có booking đang hoạt động
     const activeBookings = await tx.booking.count({
       where: {
         roomId,
@@ -350,15 +350,15 @@ async function reopenRoom(roomId: string, reason: string): Promise<Result> {
       },
     });
     if (activeBookings > 0)
-      throw new GuardFailed('Active bookings prevent reopening', activeBookings);
+      throw new GuardFailed('Booking đang hoạt động ngăn cản việc mở lại', activeBookings);
 
-    // Update room status
+    // Cập nhật trạng thái phòng
     await tx.room.update({
       where: { id: roomId },
       data: { status: 'AVAILABLE', updatedAt: new Date() },
     });
 
-    // Reopen availability slots
+    // Mở lại các slot
     await tx.roomAvailability.updateMany({
       where: { roomId, date: { gte: today }, status: 'CLOSED' },
       data: { status: 'OPEN', updatedAt: new Date() },
@@ -379,10 +379,10 @@ async function reopenRoom(roomId: string, reason: string): Promise<Result> {
       },
     });
 
-    // Push to Redis cache
+    // Xóa Redis cache
     await this.cache.del(`room:${roomId}:status`);
 
-    // Trigger OTA sync
+    // Kích hoạt OTA sync
     await this.otaSync.pushRoomUpdate(roomId);
 
     return { success: true, newStatus: 'AVAILABLE' };
@@ -392,28 +392,28 @@ async function reopenRoom(roomId: string, reason: string): Promise<Result> {
 
 ---
 
-## 5. Event-Driven Synchronization
+## 5. Đồng Bộ Theo Sự Kiện
 
-When any of the three layers changes, the other two must be notified. This prevents drift.
+Khi bất kỳ tầng nào thay đổi, hai tầng còn lại phải được thông báo. Điều này ngăn chặn sự drift (lệch pha).
 
 ```
 ┌──────────────┐     Kafka Event      ┌──────────────────┐
-│  bookings    │ ──────────────────▶ │ room_availability │
-│   table      │                      │   reconciliation │
+│   bookings   │ ──────────────────▶ │ room_availability │
+│    table     │                      │  reconciliation  │
 └──────────────┘                      └──────────────────┘
-       │                                       │
+       │                                      │
        │ Kafka Event                          │
-       ▼                                       ▼
+       ▼                                      ▼
 ┌──────────────┐                       ┌──────────────────┐
-│ rooms.status │                       │  Redis cache     │
-│  changed     │                       │  invalidation    │
+│rooms.status  │                       │  Redis cache     │
+│   changed    │                       │  invalidation    │
 └──────────────┘                       └──────────────────┘
 ```
 
-### 5a. Booking Status → Room Availability Sync
+### 5a. Đồng Bộ Từ Booking Status → Room Availability
 
 ```typescript
-// Trigger: booking status changes (PENDING→CONFIRMED→CHECKED_IN→CHECKED_OUT)
+// Trigger: booking status thay đổi (PENDING→CONFIRMED→CHECKED_IN→CHECKED_OUT)
 
 async function onBookingStatusChange(
   booking: Booking,
@@ -422,30 +422,30 @@ async function onBookingStatusChange(
 ) {
   switch (newStatus) {
     case 'PENDING_PAYMENT':
-      // Reserve inventory slot
+      // Giữ slot inventory
       await atomicIncrementHold(booking.roomId, booking.checkInDate,
                                 booking.checkInTime, booking.checkOutTime);
       break;
 
     case 'CONFIRMED':
-      // Convert hold → confirmed booking
+      // Chuyển hold → booking đã xác nhận
       await atomicConfirmBooking(booking.roomId, booking.checkInDate,
                                  booking.checkInTime);
-      // Invalidate cache
+      // Xóa cache
       await cache.del(`availability:${booking.roomId}:${booking.checkInDate}`);
       break;
 
     case 'CANCELLED':
     case 'EXPIRED':
-      // Release hold
+      // Giải phóng hold
       await atomicReleaseHold(booking.roomId, booking.checkInDate,
                               booking.checkInTime);
-      // Invalidate cache
+      // Xóa cache
       await cache.del(`availability:${booking.roomId}:${booking.checkInDate}`);
       break;
 
     case 'CHECKED_IN':
-      // Mark slot as occupied
+      // Đánh dấu slot là occupied
       await roomAvailability.update({
         where: {
           roomId_date_startTime: {
@@ -459,7 +459,7 @@ async function onBookingStatusChange(
       break;
 
     case 'CHECKED_OUT':
-      // Trigger cleaning queue
+      // Kích hoạt cleaning queue
       await roomAvailability.update({
         where: { id: booking.availabilitySlotId },
         data: { status: 'CLEANING', updatedAt: new Date() },
@@ -467,7 +467,7 @@ async function onBookingStatusChange(
       break;
   }
 
-  // Push event to Kafka for OTA sync
+  // Push event lên Kafka cho OTA sync
   await kafka.produce({
     topic: 'booking.status.changed',
     value: { bookingId: booking.id, previousStatus, newStatus, roomId: booking.roomId },
@@ -475,10 +475,10 @@ async function onBookingStatusChange(
 }
 ```
 
-### 5b. Room Status → Availability Slots Sync
+### 5b. Đồng Bộ Từ Room Status → Availability Slots
 
 ```typescript
-// Trigger: Admin changes rooms.status manually
+// Trigger: Admin thay đổi rooms.status thủ công
 
 async function onRoomStatusChange(
   roomId: string,
@@ -487,15 +487,15 @@ async function onRoomStatusChange(
 ) {
   if (previousStatus === newStatus) return;
 
-  // Map room status → availability status
+  // Ánh xạ room status → availability status
   const availabilityStatus = {
-    'AVAILABLE':  'OPEN',
-    'CLOSED':    'CLOSED',
-    'MAINTENANCE': 'CLOSED',
-    'BLOCKED':   'BLOCKED',
+    'AVAILABLE':   'OPEN',
+    'CLOSED':     'CLOSED',
+    'MAINTENANCE':'CLOSED',
+    'BLOCKED':    'BLOCKED',
   }[newStatus];
 
-  // Update all future slots atomically
+  // Cập nhật tất cả slot tương lai nguyên tử
   await roomAvailability.updateMany({
     where: {
       roomId,
@@ -504,11 +504,11 @@ async function onRoomStatusChange(
     data: { status: availabilityStatus, updatedAt: new Date() },
   });
 
-  // Invalidate Redis cache
+  // Xóa Redis cache
   await cache.del(`room:${roomId}:status`);
-  await cache.del(`availability:${roomId}:*`);  // Pattern delete
+  await cache.del(`availability:${roomId}:*`);
 
-  // Push to all OTAs via Channel Manager
+  // Push lên tất cả OTA qua Channel Manager
   await channelManager.pushRoomStatusUpdate(roomId, newStatus);
 
   // Emit room status event
@@ -519,14 +519,14 @@ async function onRoomStatusChange(
 }
 ```
 
-### 5c. Reconciliation Cron — Detect Drift
+### 5c. Cron Đối Soát — Phát Hiện Drift
 
-Even with event-driven sync, drift can happen (network failure, bugs, manual DB edits). A reconciliation job runs hourly to detect and fix drift.
+Ngay cả với đồng bộ theo sự kiện, drift vẫn có thể xảy ra (lỗi mạng, bug, chỉnh sửa thủ công DB). Job đối soát chạy mỗi giờ để phát hiện và sửa drift.
 
 ```typescript
 @Cron(CronExpression.EVERY_HOUR)
 async reconcileRoomStatus() {
-  // Find rooms where status doesn't match availability slots
+  // Tìm phòng có trạng thái không khớp với availability slots
   const drift = await this.prisma.$queryRaw<DriftReport[]>`
     SELECT
       r.id         AS room_id,
@@ -545,10 +545,10 @@ async reconcileRoomStatus() {
 
   for (const row of drift) {
     await this.alertService.send(
-      `Room status drift detected: room=${row.room_id} ` +
+      `Phát hiện drift trạng thái phòng: room=${row.room_id} ` +
       `rooms.status=${row.room_status} != slot.status=${row.slot_status}`
     );
-    // Auto-fix: reconcile to rooms.status
+    // Tự động sửa: đồng bộ về rooms.status
     await this.onRoomStatusChange(row.room_id, row.slot_status, row.room_status);
   }
 }
@@ -558,16 +558,16 @@ async reconcileRoomStatus() {
 
 ## 6. REST API Endpoints
 
-### 6a. Manual Room Status Change
+### 6a. Thay Đổi Trạng Thái Phòng Thủ Công
 
 ```typescript
 // PATCH /rooms/:id/status
-// Host/Admin changes room status
+// Host/Admin thay đổi trạng thái phòng
 
 interface UpdateRoomStatusRequest {
   status: 'AVAILABLE' | 'CLOSED' | 'MAINTENANCE' | 'BLOCKED';
-  reason: string;  // Required for CLOSED, MAINTENANCE, BLOCKED
-  refundAction?: 'AUTO_REFUND' | 'MANUAL_REVIEW';  // Only for BLOCKED
+  reason: string;  // Bắt buộc cho CLOSED, MAINTENANCE, BLOCKED
+  refundAction?: 'AUTO_REFUND' | 'MANUAL_REVIEW';  // Chỉ cho BLOCKED
 }
 
 interface UpdateRoomStatusResponse {
@@ -592,7 +592,7 @@ interface UpdateRoomStatusResponse {
 }
 ```
 
-**Success response** (all guards passed):
+**Phản hồi thành công** (tất cả guard pass):
 ```json
 {
   "success": true,
@@ -601,29 +601,29 @@ interface UpdateRoomStatusResponse {
 }
 ```
 
-**Error response** (guard failed):
+**Phản hồi lỗi** (guard fail):
 ```json
 {
   "success": false,
   "error": {
     "code": "GUARD_FAILED",
     "failedChecks": ["confirmedFuture", "activeSlots"],
-    "message": "Cannot close room with active bookings"
+    "message": "Không thể đóng phòng khi có booking đang hoạt động"
   },
   "guardResults": [
-    { "check": "pendingPayment", "passed": true, "count": 0 },
-    { "check": "confirmedFuture", "passed": false, "count": 3, "message": "3 CONFIRMED bookings in June" },
-    { "check": "checkedIn", "passed": true, "count": 0 },
-    { "check": "activeSlots", "passed": false, "count": 2, "message": "2 slots with bookings" }
+    { "check": "pendingPayment", "passed": true, "count": 0, "message": "Không có booking đang chờ" },
+    { "check": "confirmedFuture", "passed": false, "count": 3, "message": "3 booking CONFIRMED vào tháng 6" },
+    { "check": "checkedIn", "passed": true, "count": 0, "message": "Không có khách đang ở" },
+    { "check": "activeSlots", "passed": false, "count": 2, "message": "2 slot đang có booking" }
   ]
 }
 ```
 
-### 6b. Get Room Sync Status
+### 6b. Lấy Trạng Thái Đồng Bộ Của Phòng
 
 ```typescript
 // GET /rooms/:id/sync-status
-// Returns the current state of all 3 layers
+// Trả về trạng thái hiện tại của cả 3 tầng
 
 interface RoomSyncStatusResponse {
   roomId: string;
@@ -655,142 +655,142 @@ interface RoomSyncStatusResponse {
 }
 ```
 
-### 6c. Force Sync (Admin only)
+### 6c. Force Sync (Chỉ Admin)
 
 ```typescript
 // POST /rooms/:id/sync/force
-// Force reconciliation — use when drift is detected but auto-fix fails
+// Cưỡng chế đối soát — dùng khi phát hiện drift nhưng auto-fix thất bại
 
 interface ForceSyncRequest {
   targetLayer: 'rooms' | 'availability' | 'bookings';
-  targetStatus?: RoomStatus;  // Only for rooms.status
+  targetStatus?: RoomStatus;  // Chỉ cho rooms.status
 }
 ```
 
 ---
 
-## 7. State Transition Diagram (All 3 Layers)
+## 7. Sơ Đồ Chuyển Trạng Thái (Cả 3 Tầng)
 
 ```mermaid
 stateDiagram-v2
     [*] --> AVAILABLE
 
-    AVAILABLE --> CLOSED: Admin close (guards pass)
-    AVAILABLE --> MAINTENANCE: Host report damage
-    AVAILABLE --> BLOCKED: Compliance/legal
+    AVAILABLE --> CLOSED: Admin đóng (guard pass)
+    AVAILABLE --> MAINTENANCE: Host báo hư
+    AVAILABLE --> BLOCKED: Tuân thủ/pháp lý
 
-    CLOSED --> AVAILABLE: Admin reopen (guards pass)
-    CLOSED --> MAINTENANCE: Damage discovered
-    CLOSED --> BLOCKED: Compliance flag
+    CLOSED --> AVAILABLE: Admin mở lại (guard pass)
+    CLOSED --> MAINTENANCE: Phát hiện hư hỏng
+    CLOSED --> BLOCKED: Flag tuân thủ
 
-    MAINTENANCE --> AVAILABLE: Fixed + cleaned
-    MAINTENANCE --> CLOSED: Partial fix
-    MAINTENANCE --> CHECKED_IN: Emergency repair (guest stays)
+    MAINTENANCE --> AVAILABLE: Đã sửa + dọn xong
+    MAINTENANCE --> CLOSED: Sửa một phần
+    MAINTENANCE --> CHECKED_IN: Sửa khẩn cấp (khách ở lại)
 
-    BLOCKED --> AVAILABLE: Admin unblock
-    BLOCKED --> CLOSED: Block lifted, not reopened
+    BLOCKED --> AVAILABLE: Admin bỏ khóa
+    BLOCKED --> CLOSED: Bỏ khóa, không mở lại
 
-    CLOSED --> [*]: Delete room
-    MAINTENANCE --> [*]: Delete room
-    BLOCKED --> [*]: Delete room
+    CLOSED --> [*]: Xóa phòng
+    MAINTENANCE --> [*]: Xóa phòng
+    BLOCKED --> [*]: Xóa phòng
 ```
 
 ```
-GUARD RULES per transition:
-  AVAILABLE → CLOSED   : No PENDING, CONFIRMED, CHECKED_IN bookings
-  CLOSED    → AVAILABLE: No active (non-terminal) bookings
-  AVAILABLE → MAINTENANCE: No CHECKED_IN bookings
-  AVAILABLE → BLOCKED   : All non-terminal bookings must be CANCELLED + refunded
+QUY TẮC GUARD theo từng chuyển đổi:
+  AVAILABLE → CLOSED   : Không có booking PENDING, CONFIRMED, CHECKED_IN
+  CLOSED    → AVAILABLE: Không có booking đang hoạt động (không phải trạng thái kết thúc)
+  AVAILABLE → MAINTENANCE: Không có booking CHECKED_IN
+  AVAILABLE → BLOCKED   : Tất cả booking không phải trạng thái kết thúc phải CANCELLED + hoàn tiền
 ```
 
 ---
 
-## 8. Edge Cases
+## 8. Các Trường Hợp Đặc Biệt
 
-### 8a. Guest Paid → Admin Closes Room 30 Seconds Later
-
-```
-Timeline:
-  10:00:00  Guest clicks "Pay" → PENDING_PAYMENT
-  10:00:01  Payment confirmed  → CONFIRMED
-  10:00:30  Admin clicks "Close Room"
-
-  Guard check: CONFIRMED bookings = 1 → REJECTED
-  Admin sees: "Cannot close — guest has paid booking on this room"
-```
-
-✅ Correct: Guard blocks the close. Admin must cancel the booking (with refund) first.
-
-### 8b. Guest is CHECKED_IN → Admin Wants to Close Room
+### 8a. Khách Thanh Toán → Admin Đóng Phòng 30 Giây Sau
 
 ```
 Timeline:
-  Day 1 14:00  Guest CHECKED_IN
-  Day 1 15:00  Admin discovers issue, wants to close
+  10:00:00  Khách nhấn "Thanh toán" → PENDING_PAYMENT
+  10:00:01  Thanh toán thành công → CONFIRMED
+  10:00:30  Admin nhấn "Đóng Phòng"
 
-  Guard check: CHECKED_IN = 1 → REJECTED
-  Admin options:
-    1. Wait until guest CHECKED_OUT → then CLEANING → then CLOSED
-    2. Emergency: contact guest, arrange alternative accommodation
-    3. Force close (super-admin only): cancels booking, triggers refund, evacuates guest
+  Guard check: CONFIRMED bookings = 1 → TỪ CHỐI
+  Admin thấy: "Không thể đóng — có khách đã thanh toán booking này"
 ```
 
-### 8c. Room Closed with Existing Future Booking
+✅ Đúng: Guard chặn việc đóng. Admin phải hủy booking (kèm hoàn tiền) trước.
+
+### 8b. Khách Đang CHECKED_IN → Admin Muốn Đóng Phòng
 
 ```
-Guard check: CONFIRMED future = 1 → REJECTED
+Timeline:
+  Ngày 1 14:00  Khách CHECKED_IN
+  Ngày 1 15:00  Admin phát hiện vấn đề, muốn đóng phòng
 
-Admin must:
-  1. Cancel the booking → status becomes CANCELLED
-  2. Process refund if already paid
-  3. Then close room (guards pass now)
-
-Automated flow: If admin selects "Close + Auto-cancel", system:
-  - Cancels all future bookings
-  - Triggers refund via payment gateway
-  - Sends notification to all affected guests
-  - Then closes room
+  Guard check: CHECKED_IN = 1 → TỪ CHỐI
+  Tùy chọn của Admin:
+    1. Đợi khách CHECKED_OUT → rồi CLEANING → rồi CLOSED
+    2. Khẩn cấp: liên hệ khách, sắp xếp chỗ ở thay thế
+    3. Force close (super-admin only): hủy booking, kích hoạt hoàn tiền, sơ tán khách
 ```
 
-### 8d. Concurrent Close Attempt (Race Condition)
+### 8c. Đóng Phòng Có Booking Tương Lai Đang Tồn Tại
 
 ```
-Thread A: Guard check → pending=0 → passes
-Thread B: Guard check → pending=0 → passes
+Guard check: CONFIRMED future = 1 → TỪ CHỐI
+
+Admin phải:
+  1. Hủy booking → trạng thái thành CANCELLED
+  2. Xử lý hoàn tiền nếu đã thanh toán
+  3. Sau đó mới đóng phòng (guard pass)
+
+Luồng tự động: Nếu admin chọn "Đóng + Tự động hủy", hệ thống:
+  - Hủy tất cả booking tương lai
+  - Kích hoạt hoàn tiền qua payment gateway
+  - Gửi thông báo đến tất cả khách bị ảnh hưởng
+  - Sau đó mới đóng phòng
+```
+
+### 8d. Hai Thread Cùng Đóng Phòng Đồng Thời (Race Condition)
+
+```
+Thread A: Guard check → pending=0 → pass
+Thread B: Guard check → pending=0 → pass
 Thread A: UPDATE rooms.status = 'CLOSED'
 Thread B: UPDATE rooms.status = 'CLOSED'
 
-Both threads pass because SERIALIZABLE isolation
-ensures Thread B sees Thread A's committed change
-when it tries to update.
+Cả hai thread đều pass vì SERIALIZABLE isolation
+đảm bảo Thread B thấy thay đổi đã commit của Thread A
+khi nó cố gắng update.
 
-Result: Both attempt the close. First wins.
-        Second gets: "Room is already CLOSED"
+Kết quả: Thread đầu tiên thành công.
+         Thread thứ hai nhận: "Phòng đã ở trạng thái CLOSED"
 ```
 
-### 8e. Partial Availability Slots
+### 8e. Slot Availability Một Phần
 
 ```
-Room has 3 units of the same type.
-2 units are booked, 1 is still available.
+Phòng có 3 units cùng loại.
+2 units đã được book, 1 vẫn còn trống.
 
-Admin tries to close the room.
+Admin cố gắng đóng phòng.
 
-Guard check: booked_units > 0 → REJECTED
+Guard check: booked_units > 0 → TỪ CHỐI
 
-System can offer:
-  - "Close 2 units only, keep 1 available" (partial close)
-  - Or require all units to be free before full close
+Hệ thống có thể đề xuất:
+  - "Chỉ đóng 2 units, giữ 1 available" (đóng một phần)
+  - Hoặc yêu cầu tất cả units phải trống trước khi đóng toàn bộ
 ```
 
 ---
 
-## 9. Database Constraints and Triggers
+## 9. Ràng Buộc Database và Trigger
 
-### 9a. Hard Constraint — Prevent Invalid Booking
+### 9a. Ràng Buộc Cứng — Ngăn Booking Không Hợp Lệ
 
 ```sql
--- Prevent new bookings on non-AVAILABLE rooms at INSERT time
+-- Ngăn tạo booking mới trên phòng không AVAILABLE tại thời điểm INSERT
 CREATE OR REPLACE FUNCTION fn_prevent_booking_on_closed_room()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -799,7 +799,7 @@ BEGIN
     WHERE id = NEW.room_id
       AND status != 'AVAILABLE'
   ) THEN
-    RAISE EXCEPTION 'Cannot create booking: room is not available (status: %)',
+    RAISE EXCEPTION 'Không thể tạo booking: phòng không khả dụng (status: %)',
       (SELECT status FROM rooms WHERE id = NEW.room_id)
       USING ERRCODE = 'P0001';
   END IF;
@@ -813,27 +813,27 @@ FOR EACH ROW
 EXECUTE FUNCTION fn_prevent_booking_on_closed_room();
 ```
 
-### 9b. Trigger — Sync Availability on Room Status Change
+### 9b. Trigger — Đồng Bộ Availability Khi Room Status Thay Đổi
 
 ```sql
 CREATE OR REPLACE FUNCTION fn_sync_availability_on_room_status()
 RETURNS TRIGGER AS $$
 BEGIN
   IF OLD.status IS DISTINCT FROM NEW.status THEN
-    -- Map room status to availability status
+    -- Ánh xạ room status sang availability status
     UPDATE room_availability
     SET status = CASE NEW.status
-                   WHEN 'AVAILABLE'  THEN 'OPEN'
-                   WHEN 'CLOSED'     THEN 'CLOSED'
-                   WHEN 'MAINTENANCE'THEN 'CLOSED'
-                   WHEN 'BLOCKED'    THEN 'BLOCKED'
+                   WHEN 'AVAILABLE'   THEN 'OPEN'
+                   WHEN 'CLOSED'      THEN 'CLOSED'
+                   WHEN 'MAINTENANCE' THEN 'CLOSED'
+                   WHEN 'BLOCKED'     THEN 'BLOCKED'
                    ELSE status
                  END,
         updated_at = now()
     WHERE room_id = NEW.id
       AND date >= CURRENT_DATE;
 
-    -- Log the event
+    -- Ghi log sự kiện
     INSERT INTO room_status_events (
       event_type, aggregate_type, aggregate_id, payload, status
     ) VALUES (
@@ -859,13 +859,13 @@ FOR EACH ROW
 EXECUTE FUNCTION fn_sync_availability_on_room_status();
 ```
 
-### 9c. Trigger — Update Availability on Booking Status Change
+### 9c. Trigger — Cập Nhật Availability Khi Booking Status Thay Đổi
 
 ```sql
 CREATE OR REPLACE FUNCTION fn_sync_availability_on_booking_change()
 RETURNS TRIGGER AS $$
 BEGIN
-  -- PENDING_PAYMENT → hold slot
+  -- PENDING_PAYMENT → giữ slot
   IF NEW.status = 'PENDING_PAYMENT' AND OLD.status != 'PENDING_PAYMENT' THEN
     UPDATE room_availability
     SET on_hold_units = on_hold_units + 1,
@@ -876,7 +876,7 @@ BEGIN
       AND end_time >= NEW.check_in_time;
   END IF;
 
-  -- CONFIRMED → convert hold to confirmed
+  -- CONFIRMED → chuyển hold sang confirmed
   IF NEW.status = 'CONFIRMED' AND OLD.status = 'PENDING_PAYMENT' THEN
     UPDATE room_availability
     SET on_hold_units = on_hold_units - 1,
@@ -888,7 +888,7 @@ BEGIN
       AND end_time >= NEW.check_in_time;
   END IF;
 
-  -- CANCELLED/EXPIRED → release hold
+  -- CANCELLED/EXPIRED → giải phóng hold
   IF NEW.status IN ('CANCELLED', 'EXPIRED')
      AND OLD.status IN ('PENDING_PAYMENT', 'CONFIRMED') THEN
     UPDATE room_availability
@@ -902,7 +902,7 @@ BEGIN
       AND end_time >= NEW.check_in_time;
   END IF;
 
-  -- CHECKED_OUT → trigger cleaning
+  -- CHECKED_OUT → kích hoạt cleaning
   IF NEW.status = 'CHECKED_OUT' AND OLD.status = 'CHECKED_IN' THEN
     UPDATE room_availability
     SET status = 'CLEANING',
@@ -927,27 +927,27 @@ EXECUTE FUNCTION fn_sync_availability_on_booking_change();
 
 ## 10. Checklist
 
-| # | Check | When | Layer | Priority |
-|---|-------|------|-------|----------|
-| 1 | Room close blocked when PENDING_PAYMENT exists | Close room | Guard | 🔴 Critical |
-| 2 | Room close blocked when CONFIRMED future exists | Close room | Guard | 🔴 Critical |
-| 3 | Room close blocked when CHECKED_IN exists | Close room | Guard | 🔴 Critical |
-| 4 | Availability slots closed when room closed | Room status change | Trigger | 🔴 Critical |
-| 5 | New booking rejected when room not AVAILABLE | Insert booking | Trigger | 🔴 Critical |
-| 6 | on_hold_units incremented on PENDING_PAYMENT | Booking status | Trigger | 🔴 Critical |
-| 7 | booked_units incremented on CONFIRMED | Booking status | Trigger | 🔴 Critical |
-| 8 | on_hold/booked released on CANCELLED/EXPIRED | Booking status | Trigger | 🔴 Critical |
-| 9 | CLEANING triggered on CHECKED_OUT | Booking status | Trigger | 🔴 Critical |
-| 10 | Room reopen allowed only when no active bookings | Reopen room | Guard | 🔴 Critical |
-| 11 | Audit event created on every status change | Any status change | API | 🟡 High |
-| 12 | Redis cache invalidated on status change | Any status change | Event | 🟡 High |
-| 13 | OTA Channel Manager notified on change | Any status change | Event | 🟡 High |
-| 14 | Reconciliation cron detects drift hourly | Drift detection | Cron | 🟡 High |
-| 15 | Super-admin force close triggers guest notification | Force close | API | 🟠 Medium |
-| 16 | Refund triggered when BLOCKED cancels paid bookings | Block room | API | 🟠 Medium |
-| 17 | Partial close (per unit) supported for multi-unit rooms | Close room | API | 🟢 Low |
-| 18 | MAINTENANCE allows CHECKED_IN guest to stay | Maintenance | Guard | 🟠 Medium |
+| # | Kiểm tra | Khi nào | Tầng | Ưu tiên |
+|---|----------|---------|------|---------|
+| 1 | Đóng phòng bị chặn khi tồn tại PENDING_PAYMENT | Đóng phòng | Guard | 🔴 Quan trọng |
+| 2 | Đóng phòng bị chặn khi tồn tại CONFIRMED tương lai | Đóng phòng | Guard | 🔴 Quan trọng |
+| 3 | Đóng phòng bị chặn khi có CHECKED_IN | Đóng phòng | Guard | 🔴 Quan trọng |
+| 4 | Slot đồng bộ đóng khi phòng đóng | Thay đổi room status | Trigger | 🔴 Quan trọng |
+| 5 | Booking mới bị từ chối khi phòng không AVAILABLE | Tạo booking | Trigger | 🔴 Quan trọng |
+| 6 | on_hold_units tăng khi PENDING_PAYMENT | Booking status | Trigger | 🔴 Quan trọng |
+| 7 | booked_units tăng khi CONFIRMED | Booking status | Trigger | 🔴 Quan trọng |
+| 8 | on_hold/booked được giải phóng khi CANCELLED/EXPIRED | Booking status | Trigger | 🔴 Quan trọng |
+| 9 | CLEANING được kích hoạt khi CHECKED_OUT | Booking status | Trigger | 🔴 Quan trọng |
+| 10 | Mở phòng chỉ khi không có booking đang hoạt động | Mở phòng | Guard | 🔴 Quan trọng |
+| 11 | Audit event được tạo mỗi khi trạng thái thay đổi | Thay đổi trạng thái | API | 🟡 Cao |
+| 12 | Redis cache bị xóa khi trạng thái thay đổi | Thay đổi trạng thái | Event | 🟡 Cao |
+| 13 | OTA Channel Manager được thông báo khi thay đổi | Thay đổi trạng thái | Event | 🟡 Cao |
+| 14 | Cron đối soát phát hiện drift mỗi giờ | Phát hiện drift | Cron | 🟡 Cao |
+| 15 | Force close của super-admin kích hoạt thông báo khách | Force close | API | 🟠 Trung |
+| 16 | Hoàn tiền được kích hoạt khi BLOCKED hủy booking đã thanh toán | Khóa phòng | API | 🟠 Trung |
+| 17 | Đóng một phần (theo unit) được hỗ trợ cho phòng nhiều units | Đóng phòng | API | 🟢 Thấp |
+| 18 | MAINTENANCE cho phép khách CHECKED_IN ở lại | Bảo trì | Guard | 🟠 Trung |
 
 ---
 
-*Generated: 2026-05-23 — Homi 1.0 Synchronized Booking System*
+*Ngày tạo: 2026-05-23 — Homi 1.0 Synchronized Booking System*
