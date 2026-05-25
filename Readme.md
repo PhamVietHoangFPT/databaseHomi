@@ -7,6 +7,7 @@
 1. [Phân tích ERD từng trường](#1-phân-tích-erd-từng-trường)
 2. [Kiến trúc Microservice & Cải tiến Hệ thống](#2-kiến-trúc-microservice--cải-tiến-hệ-thống)
 3. [Khuyến nghị Công nghệ cho NestJS](#3-khuyến-nghị-công-nghệ-cho-nestjs)
+4. [Dispute Control Mechanisms](#4-dispute-control-mechanisms)
 
 ---
 
@@ -1463,4 +1464,100 @@ async afterAvailabilityUpdate(slotId: string, roomId: string, date: string) {
 ---
 
 *Generated: 2026-05-21 — Homi 1.0 Room Service Design Report*
+
+---
+
+## 4. Dispute Control Mechanisms
+
+### 4.1 Giới thiệu
+
+Hệ thống Dispute Control của Homi 1.0 xử lý tranh chấp giữa **Guest**, **Host**, và **Admin** trên cả hai mô hình **DAILY** và **HOURLY**. Chi tiết đầy đủ tại [disputeControlMechanisms.md](./disputeControlMechanisms.md).
+
+### 4.2 Các bảng chính
+
+| Bảng | Mục đích |
+|------|---------|
+| `disputes` | Core record — phân loại, ưu tiên, trạng thái, số tiền tranh chấp |
+| `dispute_messages` | Threaded conversation giữa các bên |
+| `dispute_evidence` | Bằng chứng immutable (ảnh, video, smartlock logs) |
+| `dispute_actions` | Audit trail mọi action |
+| `dispute_refunds` | Chi tiết refund được approve |
+| `dispute_compensations` | Credit, voucher, free night cho các bên |
+| `cancellation_policies` | Chính sách hủy chi tiết (DAILY/HOURLY) |
+| `cancellation_rules` | Các rule tính refund theo thời gian hủy |
+
+### 4.3 Dispute Categories chính
+
+```
+OVERBOOKING · PROPERTY_MISMATCH · CHECKIN_FAILURE_HOST/SYS · CLEANLINESS_ISSUE
+PAYMENT_DUPLICATE · PAYMENT_FAILED · PRICE_CALCULATION · OVERCHARGE
+CANCEL_POLICY_DISPUTE · EARLY_CHECKOUT_FORCE · REFUND_AMOUNT
+PROPERTY_DAMAGE · GUEST_MISCONDUCT · HOST_MISCONDUCT
+SMARTLOCK_CODE_WRONG · SMARTLOCK_OFFLINE · ACCESS_REVOKED_WRONG
+```
+
+### 4.4 Priority & SLA
+
+| Priority | HOURLY phản hồi | HOURLY kết luận | DAILY phản hồi | DAILY kết luận |
+|----------|-----------------|-----------------|----------------|----------------|
+| CRITICAL | 15 phút | 2 giờ | 30 phút | 4 giờ |
+| HIGH | 2 giờ | 12 giờ | 4 giờ | 24 giờ |
+| MEDIUM | 12 giờ | 3 ngày | 24 giờ | 7 ngày |
+| LOW | 24 giờ | 7 ngày | 48 giờ | 14 ngày |
+
+### 4.5 Dispute Workflow
+
+```
+CREATED → OPEN → RESPONDENT_NOTIFIED → RESPONSE_RECEIVED
+→ MEDIATING → FULL_RESOLUTION / PARTIAL_RESOLUTION / ADMIN_DECISION
+→ RESOLVED → CLOSED
+
+OPEN → AUTO_RESOLVED (khi rule tự động match)
+ANY → ESCALATED → MEDIATING / ADMIN_DECISION
+RESOLVED → APPEALED → REOPENED / APPEAL_REJECTED
+```
+
+### 4.6 Refund Engine
+
+```sql
+-- Công thức tính refund
+refund_amount = original_amount × fault_rate × evidence_strength
+-- Trừ tiền giờ đã dùng (HOURLY)
+-- Áp dụng cancellation policy (DAILY)
+-- Cap max: 95% original_amount (platform giữ 5%)
+```
+
+### 4.7 Integration Events
+
+| Event | Direction | Purpose |
+|-------|-----------|---------|
+| `DISPUTE_CREATED` | Dispute → Booking | Link dispute với booking |
+| `BOOKING_CANCELLED` | Booking → Dispute | Auto-create dispute nếu cần |
+| `SMARTLOCK_ACCESS_FAILED` | Smartlock → Dispute | Auto-create dispute khi lỗi |
+| `DISPUTE_RESOLVED` | Dispute → All | Trigger refund + notification |
+| `PAYMENT_DISPUTE` | Payment → Dispute | Handle chargeback |
+
+### 4.8 Auto-Resolution Rules
+
+| Điều kiện | Action | Refund |
+|-----------|--------|--------|
+| Smartlock system error confirmed | Auto-resolve | 100% + 100k credit |
+| Property ≠ photos (guest evidence) | Auto-resolve | 70% |
+| Host no-show (smartlock log) | Auto-resolve | 100% + free night |
+| Payment duplicate | Auto-resolve | Duplicate amount |
+| Mutual conflicting evidence | Manual mediation | — |
+
+### 4.9 DAILY vs HOURLY
+
+| Tiêu chí | DAILY | HOURLY |
+|-----------|-------|--------|
+| SLA | 30 phút – 14 ngày | 15 phút – 7 ngày |
+| Refund tính theo | Đêm đã đặt | Giờ đã dùng |
+| Evidence chính | Photos, video | Smartlock logs, app screenshots |
+| Auto-resolve rate | ~40% | ~55% |
+| CRITICAL scenario | Property không tồn tại | Smartlock fail + guest đứng cửa |
+
+---
+
+*Chi tiết đầy đủ: [disputeControlMechanisms.md](./disputeControlMechanisms.md)*
 

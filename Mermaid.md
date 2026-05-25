@@ -1604,4 +1604,352 @@ flowchart LR
 
 ---
 
+## 10. Dispute Control System
+
+### 10a. Dispute Service — Database Schema
+
+```mermaid
+erDiagram
+    DISPUTES ||--o{ DISPUTE_MESSAGES : contains
+    DISPUTES ||--o{ DISPUTE_EVIDENCE : has
+    DISPUTES ||--o{ DISPUTE_ACTIONS : tracks
+    DISPUTES ||--o{ DISPUTE_REFUNDS : resolves
+    DISPUTES ||--o{ DISPUTE_COMPENSATIONS : compensates
+    DISPUTES }o--|| BOOKINGS : relates_to
+    DISPUTES }o--|| ACCOUNTS : filed_by
+    DISPUTES }o--|| ACCOUNTS : assigned_to
+    DISPUTES }o--|| PROPERTIES : involves
+    DISPUTES ||--o| CANCELLATION_POLICIES : applies
+
+    DISPUTES {
+        uuid id PK
+        uuid booking_id FK
+        uuid filed_by_user_id UUID
+        uuid assigned_to_admin_id UUID
+        uuid property_id UUID FK
+        string category
+        string priority
+        string status
+        string rental_type
+        string filed_by_role
+        string respondent_role
+        decimal dispute_amount
+        decimal approved_refund
+        string resolution_type
+        timestamptz sla_deadline
+        boolean is_auto_resolved
+        timestamp created_at
+    }
+
+    DISPUTE_MESSAGES {
+        uuid id PK
+        uuid dispute_id FK
+        uuid sender_id UUID
+        string sender_role
+        text message
+        string message_type
+        string visibility
+        jsonb attachments
+        timestamp created_at
+    }
+
+    DISPUTE_EVIDENCE {
+        uuid id PK
+        uuid dispute_id FK
+        uuid uploaded_by UUID
+        string evidence_type
+        string file_url
+        string description
+        string purpose
+        string hash_sha256
+        boolean is_authentic
+        timestamp created_at
+    }
+
+    DISPUTE_ACTIONS {
+        uuid id PK
+        uuid dispute_id FK
+        uuid performed_by UUID
+        string action_type
+        string old_status
+        string new_status
+        jsonb action_data
+        timestamp created_at
+    }
+
+    DISPUTE_REFUNDS {
+        uuid id PK
+        uuid dispute_id FK
+        uuid booking_id FK
+        decimal original_booking_amount
+        decimal refund_amount_approved
+        string refund_type
+        string refund_method
+        string refund_status
+        timestamp created_at
+    }
+
+    DISPUTE_COMPENSATIONS {
+        uuid id PK
+        uuid dispute_id FK
+        uuid guest_id UUID
+        string compensation_type
+        decimal monetary_value
+        string voucher_code
+        date voucher_valid_until
+        string status
+        timestamp created_at
+    }
+
+    CANCELLATION_POLICIES {
+        uuid id PK
+        uuid property_id UUID FK
+        string rental_type
+        string policy_name
+        boolean is_default
+        timestamp created_at
+    }
+
+    CANCELLATION_RULES {
+        uuid id PK
+        uuid policy_id UUID FK
+        int hours_before_checkin
+        string refund_type
+        decimal refund_percentage
+    }
+```
+
+### 10b. Dispute State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> CREATED: Guest/Host/SYSTEM files
+
+    CREATED --> OPEN: Priority assigned + SLA
+    CREATED --> REJECTED: Invalid dispute
+    CREATED --> MERGED: Duplicate
+
+    OPEN --> RESPONDENT_NOTIFIED
+    OPEN --> AUTO_RESOLVED: Rule matched
+    OPEN --> ESCALATED: CRITICAL
+
+    RESPONDENT_NOTIFIED --> RESPONSE_RECEIVED
+    RESPONDENT_NOTIFIED --> RESPONSE_OVERDUE
+    RESPONDENT_NOTIFIED --> WITHDRAWN
+
+    RESPONSE_RECEIVED --> MEDIATING: Admin reviews
+    RESPONSE_RECEIVED --> AUTO_RESOLVED
+    RESPONSE_RECEIVED --> PARTIAL_RESOLUTION
+
+    MEDIATING --> ESCALATED
+    MEDIATING --> PARTIAL_RESOLUTION
+    MEDIATING --> FULL_RESOLUTION
+    MEDIATING --> ADMIN_DECISION
+
+    ESCALATED --> MEDIATING
+    ESCALATED --> ADMIN_DECISION
+
+    FULL_RESOLUTION --> RESOLVED
+    ADMIN_DECISION --> RESOLVED
+
+    RESOLVED --> CLOSED
+    RESOLVED --> APPEALED
+
+    APPEALED --> REOPENED
+    APPEALED --> APPEAL_REJECTED
+    APPEALED --> CLOSED
+
+    REOPENED --> MEDIATING
+    PARTIAL_RESOLUTION --> FULL_RESOLUTION
+    PARTIAL_RESOLUTION --> ADMIN_DECISION
+    WITHDRAWN --> CLOSED
+    AUTO_RESOLVED --> CLOSED
+```
+
+### 10c. HOURLY Dispute Flow — Check-in Failure
+
+```mermaid
+sequenceDiagram
+    participant Guest
+    participant App
+    participant DisputeService
+    participant BookingService
+    participant SmartlockService
+    participant Admin
+
+    Guest->>App: "Can't access room" → File dispute
+    App->>DisputeService: POST /disputes
+    DisputeService->>DisputeService: Assign CRITICAL priority, SLA 15min
+
+    DisputeService->>BookingService: GET booking + code status
+    BookingService-->>DisputeService: code generated but failed 3x
+
+    alt System fault detected
+        DisputeService->>SmartlockService: Force-generate new code
+        DisputeService->>DisputeService: AUTO_RESOLVED
+        DisputeService->>DisputeService: Issue 100k credit
+        DisputeService->>Guest: New code sent
+    else Host fault
+        DisputeService->>DisputeService: ESCALATE CRITICAL
+        Admin->>BookingService: Emergency code
+        DisputeService->>Guest: Emergency code + compensation
+        DisputeService->>DisputeService: MEDIATING (host accountability)
+    else No resolution
+        DisputeService->>BookingService: BOOKING_CANCELLED + FULL_REFUND
+        DisputeService->>Guest: Full refund issued
+        DisputeService->>DisputeService: Host penalty record
+    end
+```
+
+### 10d. Refund Calculation Flow
+
+```mermaid
+flowchart TD
+    A[Dispute created] --> B[Fault party determined]
+    B --> C{Host fault?}
+    B --> D{System fault?}
+    B --> E{Guest fault?}
+    B --> F{Mutual fault?}
+
+    C --> G[baseRate = 0.8]
+    D --> H[baseRate = 1.0]
+    E --> I[baseRate = 0.0]
+    F --> J[baseRate = 0.5]
+
+    G --> K[Adjust by evidence strength]
+    H --> L[Max refund = 95%]
+    I --> M[Apply cancellation policy]
+    J --> K
+
+    K --> L
+    M --> L
+
+    L --> M2{HOURLY model?}
+    L --> N2{DAILY model?}
+
+    M2 -->|Yes| N[Subtract hours used<br/>Max deduction = 50%]
+    M2 -->|No| O[Apply cancellation rules]
+
+    N --> P[Refund = original × baseRate - deductions]
+    O --> P
+    N2 --> O
+
+    P --> Q[Execute refund + compensation]
+    Q --> R[Mark RESOLVED]
+    Q --> S[Notify both parties]
+
+    style H fill:#dfd,color:#000
+    style L fill:#bbf,color:#000
+    style R fill:#dfd,color:#000
+```
+
+### 10e. Auto-Resolution Decision Matrix
+
+```mermaid
+flowchart TD
+    A[Dispute created] --> B{Gather evidence}
+    B --> C{Host fault + guest evidence strong?}
+    C -->|Yes + no counter| D[Auto-resolve 70% refund]
+
+    C -->|Has counter-evidence| E[Manual mediation]
+    C -->|No evidence| F[Request evidence from guest]
+
+    G{Smartlock system error?}
+    G -->|Yes| H[Auto-resolve 100% refund + 100k credit]
+    G -->|No| I{Host no-show + no entry log?}
+
+    I -->|Yes| J[Auto-resolve 100% + free night]
+    I -->|No| K{Payment duplicate?}
+
+    K -->|Yes| L[Auto-resolve duplicate amount]
+    K -->|No| M{Price calc error?}
+
+    M -->|Yes| N[Auto-resolve: refund difference]
+    M -->|No| E
+
+    D --> O[Execute refund + compensation]
+    H --> O
+    J --> O
+    L --> O
+    N --> O
+    E --> P[Assign to Admin queue]
+
+    style H fill:#dfd,color:#000
+    style D fill:#bbf,color:#000
+    style J fill:#dfd,color:#000
+    style E fill:#ffe0b0,color:#000
+```
+
+### 10f. Dispute Integration — Event Flow
+
+```mermaid
+sequenceDiagram
+    participant Guest
+    participant PaymentGateway
+    participant Smartlock
+    participant DisputeService
+    participant BookingService
+    participant RoomService
+    participant Admin
+
+    Smartlock->>DisputeService: SMARTLOCK_ACCESS_FAILED
+    DisputeService->>DisputeService: Auto-classify: CHECKIN_FAILURE_SYS
+    DisputeService->>DisputeService: Assign CRITICAL + 15min SLA
+    DisputeService->>BookingService: GET booking details
+    DisputeService->>RoomService: GET smartlock logs
+    DisputeService->>Admin: Push notification CRITICAL
+
+    alt System fault confirmed
+        DisputeService->>BookingService: Generate emergency code
+        DisputeService->>DisputeService: AUTO_RESOLVED
+        DisputeService->>DisputeService: Issue COMPENSATION
+        DisputeService->>Guest: New code + credit notification
+        DisputeService->>Admin: Auto-resolution logged
+    end
+
+    PaymentGateway->>DisputeService: PAYMENT_DISPUTE
+    DisputeService->>DisputeService: Auto-classify: PAYMENT_DUPLICATE
+    DisputeService->>DisputeService: AUTO_RESOLVED
+    DisputeService->>BookingService: Initiate refund
+    DisputeService->>Guest: Refund issued notification
+
+    Guest->>DisputeService: PROPERTY_MISMATCH dispute
+    DisputeService->>Admin: MEDIATING queue
+    Admin->>DisputeService: Review + decide
+    DisputeService->>BookingService: PROCESS_REFUND
+    DisputeService->>Guest: Resolution notification
+    DisputeService->>Host: Payout deduction notification
+```
+
+### 10g. DAILY vs HOURLY — Dispute Comparison
+
+```mermaid
+flowchart LR
+    subgraph DAILY["DAILY Model"]
+        D1[CRITICAL: 30min response<br/>Full resolution: 4h]
+        D2[Refund: per night<br/>Evidence: photos/video]
+        D3[Auto-resolve: ~40%]
+        D4[Compensation: Free night]
+    end
+
+    subgraph HOURLY["HOURLY Model"]
+        H1[CRITICAL: 15min response<br/>Full resolution: 2h]
+        H2[Refund: per hour used<br/>Evidence: smartlock logs]
+        H3[Auto-resolve: ~55%]
+        H4[Compensation: Free hours]
+    end
+
+    D1 -->|"SLA"| H1
+    D2 -->|"Refund calc"| H2
+    D3 -->|"Auto-rate"| H3
+    D4 -->|"Comp type"| H4
+
+    style H1 fill:#dfd,color:#000
+    style H2 fill:#dfd,color:#000
+    style H3 fill:#dfd,color:#000
+    style H4 fill:#dfd,color:#000
+```
+
+---
+
 *Generated: 2026-05-21 — Homi 1.0 Room Service Database Design*
