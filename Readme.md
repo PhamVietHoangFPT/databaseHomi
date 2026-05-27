@@ -7,7 +7,8 @@
 1. [Phân tích ERD từng trường](#1-phân-tích-erd-từng-trường)
 2. [Kiến trúc Microservice & Cải tiến Hệ thống](#2-kiến-trúc-microservice--cải-tiến-hệ-thống)
 3. [Khuyến nghị Công nghệ cho NestJS](#3-khuyến-nghị-công-nghệ-cho-nestjs)
-4. [Dispute Control Mechanisms](#4-dispute-control-mechanisms)
+4. [Auto Check-in Flow với Smart Locks](#4-auto-check-in-flow-với-smart-locks)
+5. [Dispute Control Mechanisms](#5-dispute-control-mechanisms)
 
 ---
 
@@ -1467,13 +1468,69 @@ async afterAvailabilityUpdate(slotId: string, roomId: string, date: string) {
 
 ---
 
-## 4. Dispute Control Mechanisms
+## 4. Auto Check-in Flow với Smart Locks
 
 ### 4.1 Giới thiệu
 
+Hệ thống Auto Check-in cho phép khách tự nhận phòng mà không cần gặp Host, thông qua mã truy cập được mã hóa và gửi qua app. Chi tiết đầy đủ tại [AutoCheckinFlow.md](./AutoCheckinFlow.md).
+
+### 4.2 Luồng chính
+
+```
+Booking CONFIRMED
+  → Smartlock Provider sinh mã truy cập (plaintext, không lưu)
+  → Booking Service mã hóa AES-256-GCM với khóa riêng mỗi booking
+  → Lưu code_encrypted + iv + tag vào smartlock_codes
+  → Gửi push notification cho khách: "Phòng đã sẵn sàng"
+  → Khách mở app → giải mã on-device → hiển thị mã PIN
+  → Khách nhập mã / dùng BLE / quét QR → Smartlock mở khóa
+  → Check-out: thu hồi mã qua Smartlock Provider API
+```
+
+### 4.3 Các bảng mới
+
+| Bảng | Mục đích |
+|------|---------|
+| `smartlock_codes` | Lưu code đã mã hóa, iv, tag, key_hash, thời hạn |
+| `smartlock_access_logs` | Audit trail mọi lần mở khóa |
+| `smartlock_providers` | Registry các provider (TTLock, SALTO, Nuki...) |
+| `smartlock_devices` | Registry thiết bị nội bộ |
+
+### 4.4 Bảo mật
+
+- `code_plaintext` **không bao giờ** được lưu trong database
+- Khóa giải mã: `HMAC-SHA256(booking_id, MASTER_KEY)` — mỗi booking một khóa
+- `MASTER_KEY` lưu trong AWS KMS / HashiCorp Vault
+- Giải mã hoàn toàn **on-device** — không server-side decryption
+- `device_id` không bao giờ exposed qua client-facing API
+- Mã tự hết hạn tại `checkout_time + buffer_minutes`
+
+### 4.5 Trạng thái mã truy cập
+
+```
+GENERATED → ACTIVE (valid_from đạt) → USED (lần mở đầu tiên)
+ACTIVE → REVOKED (host/hệ thống thu hồi)
+ACTIVE → EXPIRED (valid_until đạt)
+GENERATED → CANCELLED (booking bị hủy trước check-in)
+```
+
+### 4.6 Fallback khi lỗi
+
+1. BLE proximity → 2. QR code → 3. NFC tap → 4. Nhập PIN thủ công → 5. Liên hệ Host
+
+### 4.7 Offline mode
+
+App pre-download access payload khi booking confirmed, lưu trong iOS Keychain / Android Keystore. Giải mã offline hoàn toàn on-device khi khách đến không có mạng.
+
+---
+
+## 5. Dispute Control Mechanisms
+
+### 5.1 Giới thiệu
+
 Hệ thống Dispute Control của Homi 1.0 xử lý tranh chấp giữa **Guest**, **Host**, và **Admin** trên cả hai mô hình **DAILY** và **HOURLY**. Chi tiết đầy đủ tại [disputeControlMechanisms.md](./disputeControlMechanisms.md).
 
-### 4.2 Các bảng chính
+### 5.2 Các bảng chính
 
 | Bảng | Mục đích |
 |------|---------|
@@ -1486,7 +1543,7 @@ Hệ thống Dispute Control của Homi 1.0 xử lý tranh chấp giữa **Guest
 | `cancellation_policies` | Chính sách hủy chi tiết (DAILY/HOURLY) |
 | `cancellation_rules` | Các rule tính refund theo thời gian hủy |
 
-### 4.3 Dispute Categories chính
+### 5.3 Dispute Categories chính
 
 ```
 OVERBOOKING · PROPERTY_MISMATCH · CHECKIN_FAILURE_HOST/SYS · CLEANLINESS_ISSUE
@@ -1496,7 +1553,7 @@ PROPERTY_DAMAGE · GUEST_MISCONDUCT · HOST_MISCONDUCT
 SMARTLOCK_CODE_WRONG · SMARTLOCK_OFFLINE · ACCESS_REVOKED_WRONG
 ```
 
-### 4.4 Priority & SLA
+### 5.4 Priority & SLA
 
 | Priority | HOURLY phản hồi | HOURLY kết luận | DAILY phản hồi | DAILY kết luận |
 |----------|-----------------|-----------------|----------------|----------------|
@@ -1505,7 +1562,7 @@ SMARTLOCK_CODE_WRONG · SMARTLOCK_OFFLINE · ACCESS_REVOKED_WRONG
 | MEDIUM | 12 giờ | 3 ngày | 24 giờ | 7 ngày |
 | LOW | 24 giờ | 7 ngày | 48 giờ | 14 ngày |
 
-### 4.5 Dispute Workflow
+### 5.5 Dispute Workflow
 
 ```
 CREATED → OPEN → RESPONDENT_NOTIFIED → RESPONSE_RECEIVED
@@ -1517,7 +1574,7 @@ ANY → ESCALATED → MEDIATING / ADMIN_DECISION
 RESOLVED → APPEALED → REOPENED / APPEAL_REJECTED
 ```
 
-### 4.6 Refund Engine
+### 5.6 Refund Engine
 
 ```sql
 -- Công thức tính refund
@@ -1527,7 +1584,7 @@ refund_amount = original_amount × fault_rate × evidence_strength
 -- Cap max: 95% original_amount (platform giữ 5%)
 ```
 
-### 4.7 Integration Events
+### 5.7 Integration Events
 
 | Event | Direction | Purpose |
 |-------|-----------|---------|
@@ -1537,7 +1594,7 @@ refund_amount = original_amount × fault_rate × evidence_strength
 | `DISPUTE_RESOLVED` | Dispute → All | Trigger refund + notification |
 | `PAYMENT_DISPUTE` | Payment → Dispute | Handle chargeback |
 
-### 4.8 Auto-Resolution Rules
+### 5.8 Auto-Resolution Rules
 
 | Điều kiện | Action | Refund |
 |-----------|--------|--------|
@@ -1547,7 +1604,7 @@ refund_amount = original_amount × fault_rate × evidence_strength
 | Payment duplicate | Auto-resolve | Duplicate amount |
 | Mutual conflicting evidence | Manual mediation | — |
 
-### 4.9 DAILY vs HOURLY
+### 5.9 DAILY vs HOURLY
 
 | Tiêu chí | DAILY | HOURLY |
 |-----------|-------|--------|

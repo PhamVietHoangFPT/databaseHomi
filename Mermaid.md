@@ -741,6 +741,209 @@ flowchart TD
 
 ## 6. Smartlock Integration Flow
 
+### 6i. Auto Check-in Flow (Full)
+
+> Full Auto Check-in Flow design is documented in [AutoCheckinFlow.md](./AutoCheckinFlow.md).
+
+```mermaid
+flowchart TD
+    subgraph BookingConfirmed[Booking CONFIRMED]
+        BC1[Payment webhook success]
+        BC2[Publish BOOKING_CONFIRMED event]
+    end
+
+    subgraph CodeGen[Code Generation Pipeline]
+        BC2 --> CG1[Get smartlock_device_id from Room Service]
+        CG1 --> CG2[Call Smartlock Provider: POST /devices/:id/codes/generate]
+        CG2 --> CG3[Receive code plaintext (transient only)]
+        CG3 --> CG4[Derive key: HMAC-SHA256(booking_id, MASTER_KEY)]
+        CG4 --> CG5[AES-256-GCM encrypt: code_encrypted + iv + tag]
+        CG5 --> CG6[Store code_encrypted in smartlock_codes table]
+        CG6 --> CG7[Set valid_from = checkin_time, valid_until = checkout_time + buffer]
+    end
+
+    subgraph Delivery[Code Delivery]
+        CG7 --> D1[Push notification: "Your room is ready"]
+        D1 --> D2[App calls GET /bookings/:id/access-code]
+        D2 --> D3[Return: code_encrypted, iv, tag, valid_from, valid_until]
+        D3 --> D4[App derives key locally from booking_id]
+        D4 --> D5[App decrypts code on-device]
+        D5 --> D6[Display: PIN + QR + BLE unlock button]
+    end
+
+    subgraph Access[Guest Access]
+        D6 --> A1[BLE proximity unlock]
+        D6 --> A2[Manual PIN entry]
+        D6 --> A3[QR code scan]
+        A1 --> A4[Smartlock validates + UNLOCKS]
+        A2 --> A4
+        A3 --> A4
+        A4 --> A5[Log access: booking_id, method, result, timestamp]
+    end
+
+    subgraph Checkout[Checkout & Revocation]
+        A5 --> CO1[Guest taps Check-out OR valid_until reached]
+        CO1 --> CO2[Call Smartlock Provider: POST /devices/:id/codes/revoke]
+        CO2 --> CO3[UPDATE smartlock_codes is_active = false]
+        CO3 --> CO4[Publish CHECKOUT_COMPLETED event]
+        CO4 --> CO5[Room Service: slot transitions to CLEANING]
+    end
+
+    CG7 -.->|Pre-download for offline| D6
+    CO5 -.->|After buffer| RoomAvailable[Room available]
+
+    style BC1 fill:#bbf,color:#000
+    style CG6 fill:#bbf,color:#000
+    style D5 fill:#dfd,color:#000
+    style A4 fill:#dfd,color:#000
+    style CO5 fill:#dfd,color:#000
+```
+
+### 6j. Encryption Key Hierarchy
+
+```mermaid
+flowchart TD
+    K1[MASTER_ENCRYPTION_KEY<br/>(AWS KMS / HashiCorp Vault)] --> K2[Derived Key<br/>HMAC-SHA256(booking_id, MASTER_KEY)]
+    K2 --> K3[AES-256-GCM per-access encryption]
+
+    subgraph Stored["Stored in smartlock_codes table"]
+        S1[code_encrypted]
+        S2[iv]
+        S3[tag]
+        S4[key_hash]
+    end
+
+    subgraph Transient["Transient (memory only)"]
+        T1[code_plaintext from provider]
+    end
+
+    subgraph NeverStored["Never stored"]
+        N1[MASTER_ENCRYPTION_KEY]
+        N2[derived_key]
+        N3[device_id in client response]
+    end
+
+    K2 --> S1
+    T1 --> K2
+    K2 --> K3
+    K3 --> S1
+
+    style K1 fill:#fbb,color:#000
+    style T1 fill:#ffe0b0,color:#000
+    style N1 fill:#fbb,color:#000
+    style N2 fill:#fbb,color:#000
+    style N3 fill:#fbb,color:#000
+```
+
+### 6k. Access Code Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> GENERATED: BOOKING_CONFIRMED
+
+    GENERATED --> ACTIVE: valid_from reached
+    GENERATED --> EXPIRED_UNCLAIMED: valid_until passed
+    GENERATED --> CANCELLED: Booking CANCELLED
+
+    ACTIVE --> ACTIVE: Re-enter (unlimited)
+    ACTIVE --> USED: First unlock
+    ACTIVE --> REVOKED: Host/system revokes
+    ACTIVE --> EXPIRED: valid_until passed
+
+    USED --> ACTIVE: Guest leaves + re-enters
+    USED --> REVOKED: Host revokes
+    USED --> EXPIRED: valid_until passed
+
+    REVOKED --> [*]: Purged after 30 days
+    EXPIRED --> [*]: Cron cleanup
+    CANCELLED --> [*]: Purged after 7 days
+```
+
+### 6l. Fallback Chain
+
+```mermaid
+flowchart TD
+    A[Guest arrives] --> B{BLE proximity}
+    B -->|Success| Z[Unlock]
+    B -->|Fail| C{QR code}
+    C -->|Success| Z
+    C -->|Fail| D{NFC tap}
+    D -->|Success| Z
+    D -->|Fail| E{PIN entry}
+    E -->|Wrong 3x| F[Lock out 30s]
+    E -->|Success| Z
+    E -->|Expired / Revoked| G[Contact host]
+    F --> G
+
+    style Z fill:#dfd,color:#000
+    style G fill:#ffe0b0,color:#000
+    style F fill:#fbb,color:#000
+```
+
+### 6m. Smartlock Provider Adapter Pattern
+
+```mermaid
+flowchart LR
+    subgraph HomiCore[Homi Core]
+        BS[Booking Service]
+        CM[Code Manager]
+    end
+
+    subgraph Adapters[Provider Adapters]
+        TT[TTLock Adapter]
+        SA[SALTO Adapter]
+        NU[Nuki Adapter]
+        IG[igloohome Adapter]
+        YL[Yale Adapter]
+    end
+
+    subgraph Devices[Physical Devices]
+        TT_D[TTLock Device]
+        SA_D[SALTO KS]
+        NU_D[Nuki Smart Lock]
+        IG_D[igloohome Lock]
+        YL_D[Yale Access]
+    end
+
+    CM -->|unified interface| TT
+    CM -->|unified interface| SA
+    CM -->|unified interface| NU
+    CM -->|unified interface| IG
+    CM -->|unified interface| YL
+
+    TT -->|BLE+Cloud| TT_D
+    SA -->|SALTO JustIN| SA_D
+    NU -->|BLE+Bridge| NU_D
+    IG -->|BLE+Cloud| IG_D
+    YL -->|BLE+Cloud| YL_D
+
+    style HomiCore fill:#dfd,color:#000
+    style Adapters fill:#ffe0b0,color:#000
+```
+
+### 6n. Offline Mode — Pre-Download Strategy
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant BookingService
+    participant SecureStorage[App Secure Enclave<br/>iOS Keychain / Android Keystore]
+
+    Note over App: Booking CONFIRMED
+    App->>BookingService: GET /bookings/:id/access-code
+    BookingService-->>App: { code_encrypted, iv, tag, valid_from, valid_until }
+    App->>App: Re-encrypt with device-bound key
+    App->>SecureStorage: Store encrypted payload
+    Note over App: Stored for offline use
+
+    Note over App: Guest arrives offline
+    SecureStorage->>App: Retrieve encrypted payload
+    App->>App: Decrypt with device-bound key
+    App->>App: Check: valid_from <= now <= valid_until
+    App->>App: Decrypt code with HMAC-SHA256(booking_id, MASTER_KEY)
+    App->>App: Display PIN / BLE unlock
+```
+
 ### 6a. Check-in Flow
 
 ```mermaid
