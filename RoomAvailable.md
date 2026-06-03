@@ -1,6 +1,6 @@
 # Room Availability Logic — Trạng thái Phòng & Tính sẵn sàng
 
-Tài liệu này tập trung vào **cơ chế quản lý trạng thái phòng** — đảm bảo trạng thái phòng luôn phản ánh đúng thực tế (who is in the room, when checkout happens, when cleaning finishes).
+Tài liệu này tập trung vào **cơ chế quản lý trạng thái phòng** — đảm bảo trạng thái phòng luôn phản ánh đúng thực tế (ai đang ở trong phòng, khi nào checkout, khi nào dọn dẹp xong).
 
 ---
 
@@ -355,7 +355,7 @@ Muốn kéo dài: → 14:00
 Logic:
   1. Kiểm tra slots 12:00 → 14:00
   2. Nếu slot 13:00 bị booking khác giữ:
-     → Chỉ offer đến 13:00 (hoặc đến khi booking冲突 bắt đầu)
+     → Chỉ offer đến 13:00 (hoặc đến khi booking xung đột bắt đầu)
   3. Tính giá thêm: (14:00 - 12:00) × hourly_price
   4. UPDATE booking: check_out_time = 14:00
 ```

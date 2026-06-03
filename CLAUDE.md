@@ -1,199 +1,199 @@
-# CLAUDE.md: Database Design - Room Service
+# CLAUDE.md: Thiết kế Cơ sở dữ liệu - Room Service
 
-The job objective is to design a dedicated database for the **Room Service** of the Homi 1.0 system. The design must ensure data normalization, flexibly support both DAILY and HOURLY rental models, and maintain the accuracy and integrity of inventory data (availability) even under high transaction volume.
+Mục tiêu công việc là thiết kế một cơ sở dữ liệu chuyên biệt cho **Room Service** của hệ thống Homi 1.0. Thiết kế phải đảm bảo chuẩn hóa dữ liệu, hỗ trợ linh hoạt cả hai mô hình thuê theo ngày (DAILY) và theo giờ (HOURLY), đồng thời duy trì tính chính xác và toàn vẹn của dữ liệu tồn kho (availability) ngay cả khi khối lượng giao dịch lớn.
 
-## I. Functional Requirements
+## I. Yêu cầu Chức năng
 
-The design must address the following issues (compiled from Card 1 and Card 3):
+Thiết kế phải giải quyết các vấn đề sau (được tổng hợp từ Card 1 và Card 3):
 
-### 1. Ensuring Accuracy and Concurrency Control
+### 1. Đảm bảo Độ chính xác và Kiểm soát Đồng thời
 
-*   **Objective:** Strictly prevent a room from being booked by two people simultaneously (unsafe Overbooking), especially in a high-order volume environment (100k orders).
-*   **Mechanism:** Use **Atomic Update** on the `room_availability` table when performing reservation holds (PENDING orders) or confirmation (CONFIRMED orders).
-    *   **Update Logic (Atomic Update):**
+*   **Mục tiêu:** Ngăn chặn triệt để việc một phòng bị hai người cùng đặt cùng lúc (Overbooking không an toàn), đặc biệt trong môi trường có khối lượng đơn hàng lớn (100k đơn).
+*   **Cơ chế:** Sử dụng **Atomic Update** trên bảng `room_availability` khi thực hiện giữ chỗ (đơn PENDING) hoặc xác nhận (đơn CONFIRMED).
+    *   **Logic cập nhật (Atomic Update):**
         ```sql
         UPDATE room_availability 
         SET on_hold_units = on_hold_units + 1 
         WHERE id = :id 
         AND (total_units + overbooking_buffer - booked_units - on_hold_units) > 0 
         ```
-    *   The update only proceeds if the "remaining space" is greater than 0, ensuring data integrity.
+    *   Câu lệnh update chỉ được thực thi khi "khoảng trống còn lại" lớn hơn 0, đảm bảo toàn vẹn dữ liệu.
 
-### 2. Supporting Flexible Rental Models (DAILY/HOURLY)
+### 2. Hỗ trợ Mô hình Thuê Linh hoạt (DAILY/HOURLY)
 
-*   The data structure must support both daily (`DAILY`) and hourly (`HOURLY`) rentals.
-*   The time calculation mechanism must include cleaning time (`buffer_minutes`) to ensure the continuity of hourly rental rooms.
+*   Cấu trúc dữ liệu phải hỗ trợ cả hai hình thức thuê theo ngày (`DAILY`) và theo giờ (`HOURLY`).
+*   Cơ chế tính thời gian phải bao gồm thời gian dọn dẹp (`buffer_minutes`) để đảm bảo tính liên tục cho các phòng thuê theo giờ.
 
-### 3. Inventory Synchronization with OTAs (Inventory Sync)
+### 3. Đồng bộ Tồn kho với OTA (Inventory Sync)
 
-Room Service needs to support three synchronization methods to prevent unintended Overbooking:
+Room Service cần hỗ trợ ba phương pháp đồng bộ để tránh Overbooking ngoài ý muốn:
 
-1.  **iCalendar (iCal Sync):** The basic method, using a recurring Cronjob (every 15-30 minutes) to retrieve data from the OTA's iCal URL and update the internal system. (Limitation: Not Real-time, delays of several hours, suitable for small scale).
-2.  **Direct API Integration (Push/Pull):** Direct connection via the OTA's Connectivity API.
-    *   **Push Protocol:** The internal system sends a POST request to the OTA's API upon a successful transaction to reduce the number of vacant rooms.
-    *   **Pull/Webhook Protocol:** The OTA sends a Webhook back to the internal system when a transaction occurs on the OTA to lock the room inventory.
-3.  **Channel Manager (Recommendation):** Establish a single communication gateway with a central Channel Manager API (SiteMinder, Channex). This is the modern standard, ensuring near real-time synchronization (under 5 seconds).
+1.  **iCalendar (iCal Sync):** Phương pháp cơ bản, sử dụng Cronjob chạy định kỳ (mỗi 15-30 phút) để lấy dữ liệu từ URL iCal của OTA và cập nhật vào hệ thống nội bộ. (Hạn chế: Không real-time, có độ trễ vài giờ, phù hợp với quy mô nhỏ).
+2.  **Tích hợp API trực tiếp (Push/Pull):** Kết nối trực tiếp qua Connectivity API của OTA.
+    *   **Push Protocol:** Hệ thống nội bộ gửi một yêu cầu POST đến API của OTA ngay khi giao dịch thành công để giảm số phòng trống.
+    *   **Pull/Webhook Protocol:** OTA gửi ngược Webhook về hệ thống nội bộ khi có giao dịch xảy ra trên OTA để khóa tồn kho phòng.
+3.  **Channel Manager (Khuyến nghị):** Thiết lập một cổng giao tiếp duy nhất với API Channel Manager trung tâm (SiteMinder, Channex). Đây là chuẩn hiện đại, đảm bảo đồng bộ gần real-time (dưới 5 giây).
 
-### 4. Managing Room Status After Check-out
+### 4. Quản lý Trạng thái Phòng Sau Check-out
 
-*   **Issue:** Determining when a room becomes available (`avai`) after the guest `check-out` plus the cleaning time (`buffer_minutes`). This is more complex for hourly rentals.
-*   **Manual Room Status Control:** When a Host/Admin changes a room status (e.g., from OPEN to CLOSED), the system must ensure no orders are currently in the PENDING state to prevent cases where a guest has paid but the room is subsequently closed.
+*   **Vấn đề:** Xác định khi nào một phòng trở lên khả dụng (`avai`) sau khi khách `check-out` cộng thêm thời gian dọn dẹp (`buffer_minutes`). Điều này phức tạp hơn đối với hình thức thuê theo giờ.
+*   **Kiểm soát Trạng thái Phòng Thủ công:** Khi Host/Admin thay đổi trạng thái phòng (ví dụ: từ OPEN sang CLOSED), hệ thống phải đảm bảo không có đơn nào đang ở trạng thái PENDING để tránh trường hợp khách đã thanh toán nhưng phòng lại bị đóng sau đó.
 
-### 5. Smartlock Integration Flow
+### 5. Luồng Tích hợp Smartlock
 
-*   The `rooms` table stores the `smartlock_device_id`.
-*   **Automated Check-in Flow:** For homes with automated systems, the lock code is encrypted (`code_encrypted`) and provided to the guest via the app upon check-in, eliminating the need to contact the Host. (Encrypted data is stored in the `smartlock_codes` table of the Booking Service).
+*   Bảng `rooms` lưu trữ `smartlock_device_id`.
+*   **Luồng Check-in Tự động:** Đối với những căn nhà có hệ thống tự động, mã khóa được mã hóa (`code_encrypted`) và cung cấp cho khách qua ứng dụng ngay khi check-in, không cần liên hệ với Host. (Dữ liệu mã hóa được lưu trữ trong bảng `smartlock_codes` của Booking Service).
 
 ---
 
-## II. Database Schema Design (Room Service Tables)
+## II. Thiết kế Schema Cơ sở dữ liệu (Các bảng của Room Service)
 
-The Room Service Database design includes 6 main tables, ensuring data normalization.
+Thiết kế Cơ sở dữ liệu Room Service bao gồm 6 bảng chính, đảm bảo chuẩn hóa dữ liệu.
 
-### 1. `properties` Table (Accommodation Facility)
+### 1. Bảng `properties` (Cơ sở Lưu trú)
 
-Defines the physical facilities (apartment complex, hotel, homestay chain).
+Định nghĩa các cơ sở vật chất (khu căn hộ, khách sạn, chuỗi homestay).
 
 | Column | Type | Description |
 | :---: | :---: | :--- |
 | **id** | UUID | PK |
 | **host_id** | UUID | FK -> accounts (User Service) |
-| **name** | VARCHAR | Facility name (E.g.: Homi Landmark 81) |
-| **is_automated** | BOOLEAN | Flag to determine if automatic Smartlock is used |
-| **is_dangerous** | BOOLEAN | Warning flag (used to block blacklisted/frequently reported locations) |
-| **address** | TEXT | Physical address |
+| **name** | VARCHAR | Tên cơ sở (Vd: Homi Landmark 81) |
+| **is_automated** | BOOLEAN | Cờ xác định có sử dụng Smartlock tự động hay không |
+| **is_dangerous** | BOOLEAN | Cờ cảnh báo (dùng để chặn các địa điểm nằm trong danh sách đen/bị báo cáo nhiều lần) |
+| **address** | TEXT | Địa chỉ thực tế |
 
-### 2. `rooms` Table (Configuration)
+### 2. Bảng `rooms` (Cấu hình)
 
-Defines the "functionality" and automation configuration of each room, supporting hourly rental.
+Định nghĩa "chức năng" và cấu hình tự động hóa của từng phòng, hỗ trợ thuê theo giờ.
 
 | Column | Type | Constraint | Description |
 | :---: | :---: | :---: | :--- |
 | **id** | UUID | PK | |
-| **property_id** | UUID | FK, NN | Links to properties(id) |
+| **property_id** | UUID | FK, NN | Liên kết với properties(id) |
 | **rental_type** | ENUM | NN, DEF DAILY | DAILY \| HOURLY \| BOTH |
-| **hourly_price** | DECIMAL(12,2) | NULLABLE | Price per hour |
-| **min_hours** | SMALLINT | DEF 2 | Minimum hours required for booking |
-| **max_hours** | SMALLINT | NULLABLE | Maximum hour limit (null = unlimited) |
-| **base_price** | DECIMAL(12,2) | NN | Default price per night |
-| **smartlock_device_id** | VARCHAR(100) | NULLABLE | Smartlock device ID |
+| **hourly_price** | DECIMAL(12,2) | NULLABLE | Giá theo giờ |
+| **min_hours** | SMALLINT | DEF 2 | Số giờ tối thiểu yêu cầu cho một booking |
+| **max_hours** | SMALLINT | NULLABLE | Giới hạn giờ tối đa (null = không giới hạn) |
+| **base_price** | DECIMAL(12,2) | NN | Giá mặc định theo đêm |
+| **smartlock_device_id** | VARCHAR(100) | NULLABLE | ID thiết bị Smartlock |
 
-### 3. `room_types` Table (Room Categorization)
+### 3. Bảng `room_types` (Phân loại Phòng)
 
-Helps normalize data, standardize amenities, and define maximum capacity.
+Giúp chuẩn hóa dữ liệu, tiêu chuẩn hóa tiện nghi và xác định sức chứa tối đa.
 
 | Column | Type | Description |
 | :---: | :---: | :--- |
 | **id** | UUID | PK |
 | **property_id** | UUID | FK -> properties |
-| **name** | VARCHAR | Room type name (E.g.: Deluxe Studio, Suite) |
-| **amenities** | TEXT\[\] | List of amenities (Wifi, Bathtub, Kitchen...) |
-| **max_guests** | SMALLINT | Maximum number of guests |
+| **name** | VARCHAR | Tên loại phòng (Vd: Deluxe Studio, Suite) |
+| **amenities** | TEXT\[\] | Danh sách tiện nghi (Wifi, Bồn tắm, Bếp...) |
+| **max_guests** | SMALLINT | Số khách tối đa |
 
-### 4. `room_media` Table (Image Library)
+### 4. Bảng `room_media` (Thư viện Hình ảnh)
 
-Manages the visual aspects of the room, a crucial factor for closing orders on platforms.
+Quản lý khía cạnh hình ảnh của phòng, một yếu tố quan trọng để chốt đơn trên các nền tảng.
 
 | Column | Type | Description |
 | :---: | :---: | :--- |
 | **id** | UUID | PK |
 | **room_id** | UUID | FK -> rooms |
-| **media_url** | VARCHAR | Link to image/video (S3/Cloudinary) |
+| **media_url** | VARCHAR | Liên kết đến hình/video (S3/Cloudinary) |
 | **media_type** | ENUM | IMAGE, VIDEO |
-| **is_cover** | BOOLEAN | Representative cover image |
-| **display_order** | SMALLINT | Display order in the app |
+| **is_cover** | BOOLEAN | Ảnh bìa đại diện |
+| **display_order** | SMALLINT | Thứ tự hiển thị trong app |
 
-### 5. `room_availability` Table (Inventory Management)
+### 5. Bảng `room_availability` (Quản lý Tồn kho)
 
-Acts as the "gatekeeper" managing real-time availability, preventing Overbooking. Supports **Monthly Partitioning**.
+Đóng vai trò là "người gác cổng" quản lý tình trạng phòng thực tế theo thời gian thực, ngăn chặn Overbooking. Hỗ trợ **Phân vùng theo Tháng (Monthly Partitioning)**.
 
 | Column | Type | Constraint | Description |
 | :---: | :---: | :---: | :--- |
 | **id** | UUID | PK | gen_random_uuid() |
-| **room_id** | UUID | FK, NN, IDX | Links to rooms(id) |
-| **date** | DATE | NN, IDX | Specific date (YYYY-MM-DD) |
-| **start_time** | TIME | NN | Slot start time (00:00 for daily rental) |
-| **end_time** | TIME | NN | Slot end time (23:59 for daily rental) |
+| **room_id** | UUID | FK, NN, IDX | Liên kết với rooms(id) |
+| **date** | DATE | NN, IDX | Ngày cụ thể (YYYY-MM-DD) |
+| **start_time** | TIME | NN | Giờ bắt đầu slot (00:00 cho thuê theo ngày) |
+| **end_time** | TIME | NN | Giờ kết thúc slot (23:59 cho thuê theo ngày) |
 | **slot_type** | ENUM | NN | DAILY \| HOURLY |
-| **total_units** | SMALLINT | NN | Total number of rooms of the same type |
-| **booked_units** | SMALLINT | NN, DEF 0 | Number of CONFIRMED orders |
-| **on_hold_units** | SMALLINT | NN, DEF 0 | Number of PENDING orders (reserved) |
-| **overbooking_buffer** | SMALLINT | DEF 0 | Allows overselling (Homestay = 0) |
-| **buffer_minutes** | SMALLINT | DEF 30 | Cleaning time between 2 bookings |
-| **price_override** | DECIMAL(12,2) | NULLABLE | Price for this slot (null = use base price) |
+| **total_units** | SMALLINT | NN | Tổng số phòng cùng loại |
+| **booked_units** | SMALLINT | NN, DEF 0 | Số đơn đã CONFIRMED |
+| **on_hold_units** | SMALLINT | NN, DEF 0 | Số đơn đang PENDING (đã giữ chỗ) |
+| **overbooking_buffer** | SMALLINT | DEF 0 | Cho phép bán quá số phòng (Homestay = 0) |
+| **buffer_minutes** | SMALLINT | DEF 30 | Thời gian dọn dẹp giữa 2 booking |
+| **price_override** | DECIMAL(12,2) | NULLABLE | Giá cho slot này (null = dùng giá cơ bản) |
 | **status** | ENUM | NN, DEF OPEN | OPEN \| CLOSED \| BLOCKED |
 | **created_at** | TIMESTAMPTZ | DEF now() | |
 
 *   **UNIQUE constraint:** `(room_id, date, start_time, slot_type)`
 *   **Composite index:** `(room_id, date, start_time, status)`
-*   **Inventory Query Logic:** `SELECT room_id FROM room_availability WHERE date BETWEEN '15' AND '20' AND (total_units + overbooking_buffer - booked_units - on_hold_units) > 0 AND status = 'OPEN'`
+*   **Logic truy vấn tồn kho:** `SELECT room_id FROM room_availability WHERE date BETWEEN '15' AND '20' AND (total_units + overbooking_buffer - booked_units - on_hold_units) > 0 AND status = 'OPEN'`
 
-### 6. `create_room_requests` Table (Approval Workflow)
+### 6. Bảng `create_room_requests` (Quy trình Phê duyệt)
 
-Ensures quality by requiring Admin approval before a room can be listed for sale.
+Đảm bảo chất lượng bằng cách yêu cầu Admin phê duyệt trước khi một phòng được đăng bán.
 
 | Column | Type | Description |
 | :---: | :---: | :--- |
 | **id** | UUID | PK |
 | **host_id** | UUID | FK -> accounts (User Service) |
-| **property_data** | JSONB | Stores all room information entered by the Host |
+| **property_data** | JSONB | Lưu trữ tất cả thông tin phòng do Host nhập |
 | **status** | ENUM | PENDING, APPROVED, REJECTED |
-| **admin_note** | TEXT | Reason for rejection (if any) |
-| **reviewed_at** | TIMESTAMPTZ | Time of Admin review |
+| **admin_note** | TEXT | Lý do từ chối (nếu có) |
+| **reviewed_at** | TIMESTAMPTZ | Thời điểm Admin phê duyệt |
 
 ---
 
-## III. Concurrency Control Mechanism (Concurrency & Lock)
+## III. Cơ chế Kiểm soát Đồng thời (Concurrency & Lock)
 
-To solve the issue of duplicate bookings in a high-traffic environment, the Homi 1.0 system will implement a combined solution using **Distributed Lock (Redis)** and **Pessimistic Locking (DB)**.
+Để giải quyết vấn đề trùng booking trong môi trường lưu lượng cao, hệ thống Homi 1.0 sẽ triển khai một giải pháp kết hợp sử dụng **Distributed Lock (Redis)** và **Pessimistic Locking (DB)**.
 
-### 1. Comparison of Locking Mechanisms (When only 1 room remains)
+### 1. So sánh các Cơ chế Khóa (Khi chỉ còn 1 phòng)
 
-| Mechanism | How It Works | Advantages | Disadvantages |
+| Cơ chế | Cách hoạt động | Ưu điểm | Nhược điểm |
 | :---: | :--- | :--- | :--- |
-| **Pessimistic Locking** | Holds the key as soon as a customer inquires. The first one takes the key, subsequent ones wait at the door. | Absolute safety. Never any double booking. | Slow. If the key holder lingers too long, the long line of waiting people will cause a bottleneck (DB congestion). |
-| **Optimistic Locking** | Allows everyone to check. The fastest one writes their name in the log first. Later arrivals are sent away if the log is filled. | Fast. No one has to wait in line. Fully utilizes DB power. | Prone to failure. If 100 people "rush" for 1 room during a Flash sale, 99 people will get a "try again" error, creating a large conflict (Retry storm). |
-| **Distributed Lock (Redis)** | Places a ticket machine at the hotel entrance. Only those with a ticket can meet the receptionist. | Extremely fast response. People without a ticket leave immediately, not bothering the receptionist (DB). | Dependency on a third party. If the ticket machine (Redis) fails, the security guard won't know whom to let in. |
+| **Pessimistic Locking** | Giữ chìa khóa ngay khi khách hỏi. Người đầu tiên lấy chìa khóa, những người sau đợi ngay trước cửa. | An toàn tuyệt đối. Không bao giờ xảy ra đặt phòng trùng. | Chậm. Nếu người giữ chìa khóa nán lại quá lâu, hàng dài người chờ sẽ gây tắc nghẽn (DB congestion). |
+| **Optimistic Locking** | Cho phép tất cả mọi người kiểm tra. Người nhanh nhất viết tên vào sổ trước. Người đến sau sẽ bị từ chối nếu sổ đã đầy. | Nhanh. Không ai phải xếp hàng chờ. Tận dụng tối đa sức mạnh của DB. | Dễ thất bại. Nếu 100 người "xông vào" giành 1 phòng trong đợt Flash sale, 99 người sẽ nhận lỗi "thử lại", tạo ra xung đột lớn (Retry storm). |
+| **Distributed Lock (Redis)** | Đặt một máy lấy số ở cửa khách sạn. Chỉ những người có số mới được gặp lễ tân. | Phản hồi cực nhanh. Người không có số rời đi ngay lập tức, không làm phiền lễ tân (DB). | Phụ thuộc vào bên thứ ba. Nếu máy lấy số (Redis) hỏng, bảo vệ sẽ không biết để cho ai vào. |
 
-### 2. Combined Solution
+### 2. Giải pháp Kết hợp
 
-*   **Distributed Lock (Redis):** Checks the `Idempotency-Key`. If the key already exists (the user has already clicked reserve/pay), the system rejects duplicate requests (maintaining extremely fast response for the user).
-*   **Pessimistic Locking (DB):** When the Client brings the key to the DB, `Pessimistic Locking` performs a `SELECT FOR UPDATE` to lock the row in the `room_availability` table. This ensures no other transaction can jump in and modify the room count while calculations are being made.
+*   **Distributed Lock (Redis):** Kiểm tra `Idempotency-Key`. Nếu key đã tồn tại (người dùng đã nhấn đặt/trả trước đó), hệ thống từ chối các yêu cầu trùng lặp (duy trì phản hồi cực nhanh cho người dùng).
+*   **Pessimistic Locking (DB):** Khi Client mang key đến DB, `Pessimistic Locking` thực hiện `SELECT FOR UPDATE` để khóa dòng trong bảng `room_availability`. Điều này đảm bảo không có giao dịch nào khác có thể chen ngang và thay đổi số lượng phòng trong khi đang tính toán.
 
-### 3. 2-TRANSACTION BOOKING ARCHITECTURE
+### 3. KIẾN TRÚC BOOKING 2 GIAO DỊCH
 
-This mechanism divides the booking process into **two separate stages** to optimize DB performance and user experience.
+Cơ chế này chia quy trình booking thành **hai giai đoạn riêng biệt** để tối ưu hiệu năng DB và trải nghiệm người dùng.
 
-#### Stage 1: Temporary Hold
+#### Giai đoạn 1: Giữ chỗ tạm thời
 
-*   **Timing:** Immediately when the user clicks the "Pay" button.
-*   **Action at DB:**
-    1.  Open a Transaction, perform **Pessimistic Lock** (`SELECT FOR UPDATE`) on the `room_availability` table to exclusively check the room count.
-    2.  If rooms are available: Increase `booked_units` by 1 unit.
-    3.  Create a record in the `bookings` table with status `PENDING_PAYMENT`, attached with an `Idempotency-Key` to prevent duplication.
-*   **Conclusion:** Execute `COMMIT` immediately. The Lock exists for only a few milliseconds.
+*   **Thời điểm:** Ngay lập tức khi người dùng nhấn nút "Thanh toán".
+*   **Hành động tại DB:**
+    1.  Mở một Transaction, thực hiện **Pessimistic Lock** (`SELECT FOR UPDATE`) trên bảng `room_availability` để kiểm tra số phòng một cách độc quyền.
+    2.  Nếu còn phòng: Tăng `booked_units` lên 1 đơn vị.
+    3.  Tạo một bản ghi trong bảng `bookings` với trạng thái `PENDING_PAYMENT`, đính kèm `Idempotency-Key` để chống trùng lặp.
+*   **Kết luận:** Thực thi `COMMIT` ngay lập tức. Lock chỉ tồn tại trong vài phần nghìn giây.
 
-#### Intermediate Stage: Awaiting Payment
+#### Giai đoạn trung gian: Chờ thanh toán
 
-*   **Timing:** The screen displays the VietQR code (usually allowed for 10-15 minutes).
-*   **Lock Status:** Absolutely no Lock exists in the DB; connections are completely idle.
-*   **Subsequent User Experience:** If another person tries to book the same room, the DB will report "No rooms available" based on the updated `booked_units` count, not due to being "stuck" waiting for a Lock.
+*   **Thời điểm:** Màn hình hiển thị mã VietQR (thường cho phép từ 10-15 phút).
+*   **Trạng thái Lock:** Tuyệt đối không có Lock nào trong DB; các kết nối hoàn toàn rảnh rỗi.
+*   **Trải nghiệm người dùng tiếp theo:** Nếu một người khác cố gắng đặt cùng phòng, DB sẽ báo "Hết phòng" dựa trên số `booked_units` đã được cập nhật, không phải do "bị kẹt" chờ Lock.
 
-#### Stage 2: Completion or Reversal
+#### Giai đoạn 2: Hoàn tất hoặc Hoàn tác
 
-Processing based on the actual payment result from the customer.
+Xử lý dựa trên kết quả thanh toán thực tế từ khách hàng.
 
-**1. Payment Failed or Canceled (Real-time Error)**
-*   **Processing:** The Backend receives the signal, immediately opens a very short Transaction to:
-    *   Change the Booking status to `CANCELLED`.
-    *   Decrease `booked_units` by 1 unit (Returning the room to inventory).
+**1. Thanh toán Thất bại hoặc Bị hủy (Lỗi Real-time)**
+*   **Xử lý:** Backend nhận tín hiệu, ngay lập tức mở một Transaction rất ngắn để:
+    *   Chuyển trạng thái Booking thành `CANCELLED`.
+    *   Giảm `booked_units` xuống 1 đơn vị (Trả phòng về kho tồn).
 
-**2. Guest "Silently" Leaves**
-*   **Processing:** Use a Cron Job (running every 5-10 minutes) to scan for `PENDING_PAYMENT` orders that have expired (e.g., 10 minutes).
-    *   Automatically cancel the order and add the room back to the inventory data.
+**2. Khách "Lặng lẽ" Rời đi**
+*   **Xử lý:** Sử dụng Cron Job (chạy mỗi 5-10 phút) để quét các đơn `PENDING_PAYMENT` đã hết hạn (ví dụ: 10 phút).
+    *   Tự động hủy đơn và cộng phòng trở lại dữ liệu tồn kho.
 
-### 4. Effectiveness of the 2-Transaction Mechanism
+### 4. Hiệu quả của Cơ chế 2 Giao dịch
 
-1.  **Anti-Congestion (No Bottleneck):** The DB is never locked for more than 0.1 seconds. The system runs extremely smoothly even under high traffic.
-2.  **Accuracy (Consistency):** Thanks to the short-term `SELECT FOR UPDATE` in Stage 1, the room count is strictly controlled, ensuring no overselling (Overbooking).
-3.  **Resource Optimization:** Your server can handle hundreds of simultaneous customers because it does not have to "sustain" long-held DB connections.
+1.  **Chống tắc nghẽn (Không Bottleneck):** DB không bao giờ bị khóa quá 0.1 giây. Hệ thống chạy cực kỳ mượt mà ngay cả khi lưu lượng truy cập cao.
+2.  **Chính xác (Nhất quán):** Nhờ `SELECT FOR UPDATE` ngắn hạn ở Giai đoạn 1, số lượng phòng được kiểm soát chặt chẽ, đảm bảo không bán quá số phòng (Overbooking).
+3.  **Tối ưu Tài nguyên:** Server của bạn có thể xử lý hàng trăm khách hàng cùng lúc vì không phải "gánh" các kết nối DB bị giữ quá lâu.

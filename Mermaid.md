@@ -1,8 +1,8 @@
-# Homi 1.0 — Room Service Database Design
+# Homi 1.0 — Thiết kế Database Room Service
 
 ---
 
-## 1. ERD — Microservice Architecture (3 Bounded Contexts)
+## 1. ERD — Kiến trúc Microservice (3 Bounded Context)
 
 ### 1a. Room Service
 
@@ -233,7 +233,7 @@ erDiagram
     }
 ```
 
-### 1d. Domain Event Contract
+### 1d. Hợp đồng Domain Event
 
 | Event Name | Emitter | Consumers | Payload |
 |---|---|---|---|
@@ -248,9 +248,9 @@ erDiagram
 
 ---
 
-## 2. Booking Flow — 2-Transaction Architecture
+## 2. Luồng Đặt phòng — Kiến trúc 2-Transaction
 
-### 2a. Stage 1 — Temporary Hold (Room Service)
+### 2a. Giai đoạn 1 — Giữ chỗ tạm thời (Room Service)
 
 ```mermaid
 sequenceDiagram
@@ -279,7 +279,7 @@ sequenceDiagram
     end
 ```
 
-### 2b. Stage 1b — Booking Service Creates Record (Event-Driven)
+### 2b. Giai đoạn 1b — Booking Service tạo bản ghi (Event-Driven)
 
 ```mermaid
 sequenceDiagram
@@ -293,7 +293,7 @@ sequenceDiagram
     Booking_Service->>Message_Broker: ACK message
 ```
 
-### 2c. Stage 2 — Payment Result via Events
+### 2c. Giai đoạn 2 — Kết quả thanh toán qua Events
 
 ```mermaid
 sequenceDiagram
@@ -337,10 +337,10 @@ sequenceDiagram
         Room_Service->>Message_Broker: ACK
     end
 
-    Note over Message_Broker,Room_Service: Idempotency: duplicate events safely ignored
+    Note over Message_Broker,Room_Service: Idempotency: sự kiện trùng lặp được bỏ qua an toàn
 ```
 
-### 2d. Pending Booking Expiration (Cron)
+### 2d. Hết hạn Booking đang chờ (Cron)
 
 ```mermaid
 sequenceDiagram
@@ -351,17 +351,17 @@ sequenceDiagram
     participant Room_Service
     participant Room_DB
 
-    Note over Cron: Cron every 5-10 min
-    Cron->>Booking_Service: Trigger expired booking scan
-    Booking_Service->>Booking_DB: SELECT PENDING_PAYMENT orders older than 10min
-    Booking_DB-->>Booking_Service: Expired bookings list
+    Note over Cron: Cron mỗi 5-10 phút
+    Cron->>Booking_Service: Trigger quét booking hết hạn
+    Booking_Service->>Booking_DB: SELECT các đơn PENDING_PAYMENT cũ hơn 10 phút
+    Booking_DB-->>Booking_Service: Danh sách booking hết hạn
 
-    loop For each expired booking
-        Booking_Service->>Booking_DB: UPDATE booking to EXPIRED
+    loop Với mỗi booking hết hạn
+        Booking_Service->>Booking_DB: UPDATE booking thành EXPIRED
         Booking_Service->>Booking_DB: INSERT booking_status_events (EXPIRED)
         Booking_Service->>Message_Broker: Publish BOOKING_EXPIRED
         Message_Broker->>Room_Service: Deliver BOOKING_EXPIRED
-        Room_Service->>Room_DB: UPDATE slot_booking to EXPIRED
+        Room_Service->>Room_DB: UPDATE slot_booking thành EXPIRED
         Room_Service->>Room_DB: UPDATE availability on_hold_units - 1
         Room_Service->>Room_DB: COMMIT
         Room_Service->>Message_Broker: ACK
@@ -370,7 +370,7 @@ sequenceDiagram
 
 ---
 
-## 3. Concurrency Control
+## 3. Kiểm soát Concurrency
 
 ```mermaid
 flowchart TB
@@ -379,7 +379,7 @@ flowchart TB
     end
 
     subgraph RedisLayer
-        A2 --> C1{SETNX Idempotency-Key TTL 15 min}
+        A2 --> C1{SETNX Idempotency-Key TTL 15 phút}
         C1 -->|Key set| D1[Acquire Redis Lock]
         C1 -->|Key exists| E1[Return 409 Duplicate]
     end
@@ -398,21 +398,21 @@ flowchart TB
     E1 --> M1
 ```
 
-| Scenario | Redis Lock | DB Pessimistic Lock | Combined |
+| Kịch bản | Redis Lock | DB Pessimistic Lock | Kết hợp |
 |---|---|---|---|
-| 100 users 1 room | 99 rejected fast at Redis | 1 proceeds | Best |
-| Redis down | Bypassed | DB lock works alone | Graceful degradation |
-| Flash sale 1000 req/s | All non-first rejected instantly | Only winner enters DB | Anti-retry-storm |
+| 100 users 1 phòng | 99 bị từ chối nhanh tại Redis | 1 tiếp tục | Tốt nhất |
+| Redis down | Bị bỏ qua | DB lock hoạt động độc lập | Graceful degradation |
+| Flash sale 1000 req/s | Tất cả người không phải đầu tiên bị từ chối ngay | Chỉ người thắng vào DB | Chống retry-storm |
 
 ---
 
-## 4. Rental Model — DAILY vs HOURLY
+## 4. Mô hình thuê — DAILY vs HOURLY
 
-### 4a. DAILY Rental Timeline
+### 4a. Timeline thuê DAILY
 
 ```mermaid
 gantt
-    title DAILY Rental: 1 Room = 1 Day Slot
+    title DAILY Rental: 1 Phòng = 1 Day Slot
     dateFormat  YYYY-MM-DD HH:mm
     axisFormat  %H:%M
 
@@ -429,11 +429,11 @@ gantt
     Booking_B         :active,  b2, 2026-05-21 14:00, 22h
 ```
 
-### 4b. HOURLY Rental Timeline
+### 4b. Timeline thuê HOURLY
 
 ```mermaid
 gantt
-    title HOURLY Rental: Multiple Slots Per Day
+    title HOURLY Rental: Nhiều Slot trong Ngày
     dateFormat  YYYY-MM-DD HH:mm
     axisFormat  %H:%M
 
@@ -450,97 +450,97 @@ gantt
     Booking_C        :active,  s7, 2026-05-20 14:00, 3h
 ```
 
-### 4c. Hourly Slot Generation Logic
+### 4c. Logic sinh Slot theo giờ
 
 ```mermaid
 flowchart TD
-    A[Checkout time + buffer] --> B{Buffer elapsed?}
-    B -->|Yes| C[Next guest check-in]
-    B -->|No| D[Slot marked BLOCKED]
+    A[Checkout time + buffer] --> B{Buffer đã trôi qua?}
+    B -->|Có| C[Check-in khách tiếp theo]
+    B -->|Không| D[Slot được đánh dấu BLOCKED]
 
-    E[Generate HOURLY slots] --> F[Start = 00:00]
+    E[Sinh các slot HOURLY] --> F[Start = 00:00]
     F --> G{Start lt 24:00?}
-    G -->|Yes| H[Create slot start to start+1hr]
+    G -->|Có| H[Tạo slot từ start đến start+1hr]
     H --> I[start = start + 1hr + buffer_minutes]
     I --> G
-    G -->|No| J[Day slots complete]
+    G -->|Không| J[Hoàn tất slot trong ngày]
 
-    E2[Example: slot 14:00 booked] --> E2b[15:00-15:30 BLOCKED]
-    E2b --> P[15:30 next available]
+    E2[Ví dụ: slot 14:00 đã được book] --> E2b[15:00-15:30 BLOCKED]
+    E2b --> P[15:30 slot tiếp theo khả dụng]
 ```
 
-### 4d. Inventory Formula
+### 4d. Công thức Inventory
 
 ```mermaid
 flowchart LR
     subgraph Daily
-        D1[Formula: units + buffer - booked - on_hold]
-        D2{"greater than 0?"}
+        D1[Công thức: units + buffer - booked - on_hold]
+        D2{"lớn hơn 0?"}
         D1 --> D2
-        D2 -->|Yes| D3[Room AVAILABLE]
-        D2 -->|No| D4[Room SOLD OUT]
+        D2 -->|Có| D3[Phòng AVAILABLE]
+        D2 -->|Không| D4[Phòng SOLD OUT]
     end
 
     subgraph Hourly
-        H1[Formula per slot: units + buffer - booked - on_hold]
-        H2{"greater than 0?"}
+        H1[Công thức mỗi slot: units + buffer - booked - on_hold]
+        H2{"lớn hơn 0?"}
         H1 --> H2
-        H2 -->|Yes| H3[Slot AVAILABLE]
-        H2 -->|No| H4[Slot UNAVAILABLE]
+        H2 -->|Có| H3[Slot AVAILABLE]
+        H2 -->|Không| H4[Slot UNAVAILABLE]
     end
 ```
 
 ---
 
-## 5. Room Status After Check-out
+## 5. Trạng thái phòng sau Check-out
 
-### 5a. Complete Room Status State Machine (10 States)
+### 5a. Máy trạng thái hoàn chỉnh của phòng (10 trạng thái)
 
 ```mermaid
 stateDiagram-v2
-    [*] --> AVAILABLE: Room created
+    [*] --> AVAILABLE: Phòng được tạo
 
-    AVAILABLE --> RESERVED: Guest clicks Pay
-    AVAILABLE --> CLOSED: Host closes room
-    AVAILABLE --> MAINTENANCE: Issue detected
+    AVAILABLE --> RESERVED: Khách nhấn Pay
+    AVAILABLE --> CLOSED: Host đóng phòng
+    AVAILABLE --> MAINTENANCE: Phát hiện sự cố
 
-    RESERVED --> CONFIRMED: Payment success
-    RESERVED --> AVAILABLE: Payment failed / timeout
+    RESERVED --> CONFIRMED: Thanh toán thành công
+    RESERVED --> AVAILABLE: Thanh toán thất bại / timeout
 
-    CONFIRMED --> CHECKED_IN: Smartlock unlocked
-    CONFIRMED --> AVAILABLE: Cancelled / no-show 24h
+    CONFIRMED --> CHECKED_IN: Smartlock được mở khóa
+    CONFIRMED --> AVAILABLE: Hủy / no-show 24h
 
-    CHECKED_IN --> CHECKED_OUT: Guest taps Check-out
-    CHECKED_IN --> AVAILABLE: Emergency cancellation
+    CHECKED_IN --> CHECKED_OUT: Khách nhấn Check-out
+    CHECKED_IN --> AVAILABLE: Hủy khẩn cấp
 
-    CHECKED_OUT --> CLEANING: Auto 30s after checkout
-    CHECKED_OUT --> MAINTENANCE: Damage found at checkout
+    CHECKED_OUT --> CLEANING: Tự động 30s sau checkout
+    CHECKED_OUT --> MAINTENANCE: Phát hiện hư hỏng khi checkout
 
-    CLEANING --> INSPECTING: Housekeeper marks done
-    CLEANING --> MAINTENANCE: Damage found during cleaning
+    CLEANING --> INSPECTING: Housekeeper đánh dấu xong
+    CLEANING --> MAINTENANCE: Phát hiện hư hỏng khi dọn dẹp
 
-    INSPECTING --> AVAILABLE: Host approves
-    INSPECTING --> MAINTENANCE: Host finds issue
+    INSPECTING --> AVAILABLE: Host duyệt
+    INSPECTING --> MAINTENANCE: Host phát hiện sự cố
 
-    MAINTENANCE --> CLEANING: Repairs done needs cleaning
-    MAINTENANCE --> AVAILABLE: Repairs done room clean
-    MAINTENANCE --> CHECKED_IN: Emergency fix while guest in room
+    MAINTENANCE --> CLEANING: Sửa xong cần dọn dẹp
+    MAINTENANCE --> AVAILABLE: Sửa xong phòng sạch
+    MAINTENANCE --> CHECKED_IN: Sửa khẩn cấp khi khách đang ở
 
-    CLOSED --> AVAILABLE: Host reopens room
-    CLOSED --> MAINTENANCE: Issue found during closure
-    CLOSED --> BLOCKED: Admin blocks compliance issue
-    CLOSED --> [*]: Room permanently deleted
+    CLOSED --> AVAILABLE: Host mở lại phòng
+    CLOSED --> MAINTENANCE: Phát hiện sự cố trong thời gian đóng
+    CLOSED --> BLOCKED: Admin chặn vấn đề tuân thủ
+    CLOSED --> [*]: Phòng bị xóa vĩnh viễn
 
-    BLOCKED --> AVAILABLE: Admin unblocks
+    BLOCKED --> AVAILABLE: Admin bỏ chặn
 
-    AVAILABLE --> [*]: Room deleted
+    AVAILABLE --> [*]: Phòng bị xóa
 ```
 
-### 5b. DAILY Rental — Check-out Timeline
+### 5b. Thuê DAILY — Timeline Check-out
 
 ```mermaid
 gantt
-    title DAILY Rental: Room Status Timeline
+    title DAILY Rental: Timeline trạng thái phòng
     dateFormat HH:mm
     axisFormat %H:%M
 
@@ -550,11 +550,11 @@ gantt
     "AVAILABLE"  :active, a1, after c1, 8h
 ```
 
-### 5c. HOURLY Rental — Multi-Booking Day Timeline
+### 5c. Thuê HOURLY — Timeline nhiều booking trong ngày
 
 ```mermaid
 gantt
-    title HOURLY Rental: Multiple Bookings Per Day
+    title HOURLY Rental: Nhiều booking trong ngày
     dateFormat HH:mm
     axisFormat %H:%M
 
@@ -569,86 +569,86 @@ gantt
     Walk-in    :milestone, walk2, 20:00, 30m
 ```
 
-### 5d. HOURLY Availability Slot Calculator
+### 5d. Bộ tính Slot khả dụng HOURLY
 
 ```mermaid
 flowchart TD
-    subgraph Input[Calculate Available Slots]
-        I1[checkout_time of last booking]
-        I2[buffer_minutes from room_availability]
-        I3[current_time from system clock]
+    subgraph Input[Input - Tính toán các slot khả dụng]
+        I1[checkout_time của booking trước]
+        I2[buffer_minutes từ room_availability]
+        I3[current_time từ system clock]
     end
 
     Input --> C1[available_after = checkout_time + buffer_minutes]
     C1 --> C2{available_after lt current_time?}
 
-    C2 -->|Yes slot is ready| C3[Mark slot status = OPEN]
-    C2 -->|No wait for buffer| C4[Slot status = CLEANING]
-    C4 --> C5{Cron every 5 min}
+    C2 -->|Có - slot đã sẵn sàng| C3[Đánh dấu slot status = OPEN]
+    C2 -->|Không - chờ buffer| C4[Slot status = CLEANING]
+    C4 --> C5{Cron mỗi 5 phút}
 
     C5 --> C3
 
-    subgraph ExistingBookings[Scan for Existing Bookings]
-        C3 --> E1{Any CONFIRMED booking starts within next 2 hours?}
-        E1 -->|Yes back-to-back| E2[Pre-reserve slot for existing booking]
-        E1 -->|No gap exists| E3[Slot OPEN for new walk-in orders]
+    subgraph ExistingBookings[Quét các booking hiện có]
+        C3 --> E1{Có booking CONFIRMED nào bắt đầu trong 2 giờ tới?}
+        E1 -->|Có - liên tiếp| E2[Pre-reserve slot cho booking hiện có]
+        E1 -->|Không - có khoảng trống| E3[Slot OPEN cho walk-in mới]
     end
 
-    E2 --> E4[Calculate next available_after = booking_end + buffer]
-    E3 --> E5[Slot OPEN for duration = 24h - available_after]
+    E2 --> E4[Tính next available_after = booking_end + buffer]
+    E3 --> E5[Slot OPEN trong khoảng = 24h - available_after]
     E4 --> E3
 
-    E5 --> E6[Publish slot update to Redis cache]
-    E6 --> E7[Push to OTA via Channel Manager]
+    E5 --> E6[Publish slot update tới Redis cache]
+    E6 --> E7[Push tới OTA qua Channel Manager]
 ```
 
-### 5e. Checkout → Cleaning → Available Transition Engine
+### 5e. Động cơ chuyển trạng thái Checkout → Cleaning → Available
 
 ```mermaid
 flowchart TD
-    subgraph CheckoutTrigger[Checkout Trigger Event]
-        T1[CHECKOUT_COMPLETED event received]
-        T2[Extract: booking_id, room_id, checkout_time]
+    subgraph CheckoutTrigger[Sự kiện trigger Checkout]
+        T1[Nhận sự kiện CHECKOUT_COMPLETED]
+        T2[Trích xuất: booking_id, room_id, checkout_time]
     end
 
-    T1 --> S1[Calculate available_after]
+    T1 --> S1[Tính available_after]
     S1 --> S2[available_after = checkout_time + buffer_minutes]
 
     S2 --> S3{available_after le now?}
 
-    S3 -->|Yes already past| S4[Immediately set slot status = OPEN]
-    S3 -->|No in future| S5[Set slot status = CLEANING]
-    S5 --> SCHED[Cron every 5 min re-evaluates]
+    S3 -->|Có - đã qua| S4[Ngay lập tức set slot status = OPEN]
+    S3 -->|Không - trong tương lai| S5[Set slot status = CLEANING]
+    S5 --> SCHED[Cron mỗi 5 phút đánh giá lại]
 
-    subgraph StatusEnum[Status Values]
-        ST1[AVAILABLE: slot visible and bookable]
-        ST2[RESERVED: slot held by PENDING_PAYMENT]
-        ST3[CONFIRMED: payment success check-in pending]
-        ST4[CHECKED_IN: guest currently in room]
-        ST5[CHECKED_OUT: guest checked out cleaning pending]
-        ST6[CLEANING: housekeeping in progress]
-        ST7[INSPECTING: awaiting host approval]
-        ST8[CLOSED: manual admin closure]
-        ST9[MAINTENANCE: repair in progress]
-        ST10[BLOCKED: compliance or policy block]
+    subgraph StatusEnum[Giá trị Status]
+        ST1[AVAILABLE: slot hiển thị và có thể đặt]
+        ST2[RESERVED: slot được giữ bởi PENDING_PAYMENT]
+        ST3[CONFIRMED: thanh toán thành công đang chờ check-in]
+        ST4[CHECKED_IN: khách hiện đang ở trong phòng]
+        ST5[CHECKED_OUT: khách đã check-out đang chờ dọn dẹp]
+        ST6[CLEANING: housekeeping đang tiến hành]
+        ST7[INSPECTING: đang chờ host duyệt]
+        ST8[CLOSED: admin đóng thủ công]
+        ST9[MAINTENANCE: đang sửa chữa]
+        ST10[BLOCKED: chặn theo tuân thủ hoặc chính sách]
     end
 
-    subgraph HOURLYSpecial[HOURLY-Specific Rules]
-        H1[For HOURLY: recalculate ALL future slots for that date]
-        H2[For DAILY: only one slot per date — update once]
-        H1 --> H3[Generate hourly slots from 00:00 to 23:59]
-        H3 --> H4[Each slot: start_time end_time status price_override]
-        H4 --> H5[Adjacent CLEANING slots merge visually as single block]
+    subgraph HOURLYSpecial[Quy tắc riêng cho HOURLY]
+        H1[Với HOURLY: tính lại TẤT CẢ slot tương lai cho ngày đó]
+        H2[Với DAILY: chỉ một slot mỗi ngày - cập nhật một lần]
+        H1 --> H3[Sinh slot hourly từ 00:00 đến 23:59]
+        H3 --> H4[Mỗi slot: start_time end_time status price_override]
+        H4 --> H5[Các slot CLEANING liền kề gộp lại thành một khối]
     end
 
     S4 --> H1
     SCHED --> S4
 
-    subgraph OTAPush[OTA Synchronization]
-        S4 --> O1[room_availability updated: status = AVAILABLE]
-        O1 --> O2[Push to Redis cache with TTL]
+    subgraph OTAPush[Đồng bộ OTA]
+        S4 --> O1[room_availability cập nhật: status = AVAILABLE]
+        O1 --> O2[Push tới Redis cache với TTL]
         O2 --> O3[Trigger OTA Channel Manager sync]
-        O3 --> O4[OTA updates availability within 5 seconds]
+        O3 --> O4[OTA cập nhật availability trong 5 giây]
     end
 
     style S2 fill:#bbf,color:#000
@@ -657,7 +657,7 @@ flowchart TD
     style O4 fill:#dfd,color:#000
 ```
 
-### 5f. State Transition Guard — Admin Status Change
+### 5f. Guard chuyển trạng thái — Thay đổi trạng thái bởi Admin
 
 ```mermaid
 sequenceDiagram
@@ -671,63 +671,63 @@ sequenceDiagram
     Room_Service->>Room_DB: SELECT active slot_bookings for this room_id
     Room_DB-->>Room_Service: active_count
 
-    alt active_count greater than 0
+    alt active_count lớn hơn 0
         Room_Service->>Room_DB: ROLLBACK
-        Room_Service-->>Host: 409 Conflict N active bookings exist
-    else active_count equals 0
+        Room_Service-->>Host: 409 Conflict - có N booking đang hoạt động
+    else active_count bằng 0
         Room_Service->>Room_DB: UPDATE room_availability SET status = CLOSED
         Room_Service->>Room_DB: INSERT room_booking_events (ROOM_CLOSED)
         Room_Service->>Room_DB: COMMIT
-        Room_Service-->>Host: 200 OK Room closed
+        Room_Service-->>Host: 200 OK Phòng đã đóng
         Room_Service->>Message_Broker: Publish ROOM_STATUS_CHANGED
     end
 ```
 
-### 5g. HOURLY Edge Cases — Walk-in and Back-to-Back
+### 5g. Edge case HOURLY — Walk-in và Back-to-Back
 
 ```mermaid
 flowchart TD
-    subgraph BackToBack[Edge Case 1: Back-to-Back Booking]
-        B1[Guest A CHECKED_OUT at 12:00]
-        B2[Guest B already CONFIRMED for 12:00]
+    subgraph BackToBack[Edge case 1: Booking Back-to-Back]
+        B1[Khách A CHECKED_OUT lúc 12:00]
+        B2[Khách B đã CONFIRMED cho 12:00]
         B1 --> B3{checkout_time + buffer le next_booking_start?}
-        B3 -->|Yes no buffer needed| B4[Slot immediately = CHECKED_IN for B]
-        B3 -->|No gap needed| B5[Insert CLEANING slot 12:00 to 12:30]
+        B3 -->|Có - không cần buffer| B4[Slot ngay lập tức = CHECKED_IN cho B]
+        B3 -->|Không - cần khoảng trống| B5[Chèn slot CLEANING 12:00 đến 12:30]
     end
 
-    subgraph WalkIn[Edge Case 2: Walk-in During CLEANING]
-        W1[Room in CLEANING: 12:00 to 12:30]
-        W2[Walk-in arrives 12:15 wants room 12:30 to 16:30]
-        W2 --> W3{Is slot at 12:30 still CLEANING?}
-        W3 -->|Yes cleaning not done| W4[Show estimated available: 12:30]
-        W3 -->|No buffer passed| W5[Slot is AVAILABLE — allow booking]
+    subgraph WalkIn[Edge case 2: Walk-in trong khi CLEANING]
+        W1[Phòng đang CLEANING: 12:00 đến 12:30]
+        W2[Walk-in đến 12:15 muốn phòng 12:30 đến 16:30]
+        W2 --> W3{Slot tại 12:30 vẫn đang CLEANING?}
+        W3 -->|Có - chưa dọn xong| W4[Hiển thị ước tính khả dụng: 12:30]
+        W3 -->|Không - buffer đã trôi qua| W5[Slot là AVAILABLE - cho phép đặt]
     end
 
-    subgraph Overlap[Edge Case 3: Overlapping HOURLY Bookings]
-        O1[Existing booking: 10:00 to 14:00]
-        O2[New booking: 12:00 to 16:00]
-        O2 --> O3{Check all existing slots for overlap}
-        O3 --> O4[Overlap detected at 12:00 to 14:00]
-        O4 --> O5[Reject: slot conflict]
-        O4 -->|No overlap| O6[Accept: 14:00 to 16:00 only]
+    subgraph Overlap[Edge case 3: Booking HOURLY chồng lấn]
+        O1[Booking hiện có: 10:00 đến 14:00]
+        O2[Booking mới: 12:00 đến 16:00]
+        O2 --> O3{Kiểm tra tất cả slot hiện có xem có chồng lấn}
+        O3 --> O4[Phát hiện chồng lấn tại 12:00 đến 14:00]
+        O4 --> O5[Từ chối: xung đột slot]
+        O4 -->|Không chồng lấn| O6[Chấp nhận: 14:00 đến 16:00]
     end
 
-    subgraph Extend[Edge Case 4: Extend Stay]
-        E1[Guest in room: booked 10:00 to 12:00]
-        E2[Guest wants to extend to 14:00]
-        E2 --> E3{Check slots 12:00 to 14:00 available?}
-        E3 -->|Available| E4[Extend booking: UPDATE end_time]
-        E3 -->|Conflict at 13:00| E5[Show max available: 13:00]
-        E5 --> E6[Offer partial extension or next available slot]
+    subgraph Extend[Edge case 4: Gia hạn thời gian ở]
+        E1[Khách trong phòng: đã đặt 10:00 đến 12:00]
+        E2[Khách muốn gia hạn đến 14:00]
+        E2 --> E3{Kiểm tra slot 12:00 đến 14:00 có sẵn?}
+        E3 -->|Có sẵn| E4[Gia hạn booking: UPDATE end_time]
+        E3 -->|Xung đột tại 13:00| E5[Hiển thị tối đa khả dụng: 13:00]
+        E5 --> E6[Đề xuất gia hạn một phần hoặc slot tiếp theo]
     end
 
-    subgraph Overnight[Edge Case 5: Overnight HOURLY]
-        ON1[Guest books 22:00 to 06:00 next day]
-        ON1 --> ON2[Generate slots spanning midnight boundary]
-        ON2 --> ON3[Create slots for date 1: 22:00-24:00]
-        ON3 --> ON4[Create slots for date 2: 00:00-06:00]
-        ON4 --> ON5[Single booking_id spans 2 date partitions]
-        ON5 --> ON6[Price = sum of each slot price_override]
+    subgraph Overnight[Edge case 5: HOURLY qua đêm]
+        ON1[Khách đặt 22:00 đến 06:00 ngày hôm sau]
+        ON1 --> ON2[Sinh slot vượt qua ranh giới nửa đêm]
+        ON2 --> ON3[Tạo slot cho ngày 1: 22:00-24:00]
+        ON3 --> ON4[Tạo slot cho ngày 2: 00:00-06:00]
+        ON4 --> ON5[Một booking_id trải qua 2 date partition]
+        ON5 --> ON6[Giá = tổng price_override của mỗi slot]
     end
 
     style B4 fill:#dfd,color:#000
@@ -739,11 +739,11 @@ flowchart TD
 
 ---
 
-## 6. Smartlock Integration Flow
+## 6. Luồng tích hợp Smartlock
 
-### 6i. Auto Check-in Flow (Full)
+### 6i. Luồng Auto Check-in (Đầy đủ)
 
-> Full Auto Check-in Flow design is documented in [AutoCheckinFlow.md](./AutoCheckinFlow.md).
+> Toàn bộ thiết kế Luồng Auto Check-in được mô tả trong [AutoCheckinFlow.md](./AutoCheckinFlow.md).
 
 ```mermaid
 flowchart TD
@@ -752,45 +752,45 @@ flowchart TD
         BC2[Publish BOOKING_CONFIRMED event]
     end
 
-    subgraph CodeGen[Code Generation Pipeline]
-        BC2 --> CG1[Get smartlock_device_id from Room Service]
-        CG1 --> CG2[Call Smartlock Provider: POST /devices/:id/codes/generate]
-        CG2 --> CG3[Receive code plaintext (transient only)]
+    subgraph CodeGen[Pipeline tạo mã]
+        BC2 --> CG1[Lấy smartlock_device_id từ Room Service]
+        CG1 --> CG2[Gọi Smartlock Provider: POST /devices/:id/codes/generate]
+        CG2 --> CG3[Nhận code plaintext (chỉ tạm thời)]
         CG3 --> CG4[Derive key: HMAC-SHA256(booking_id, MASTER_KEY)]
         CG4 --> CG5[AES-256-GCM encrypt: code_encrypted + iv + tag]
-        CG5 --> CG6[Store code_encrypted in smartlock_codes table]
+        CG5 --> CG6[Lưu code_encrypted vào bảng smartlock_codes]
         CG6 --> CG7[Set valid_from = checkin_time, valid_until = checkout_time + buffer]
     end
 
-    subgraph Delivery[Code Delivery]
-        CG7 --> D1[Push notification: "Your room is ready"]
-        D1 --> D2[App calls GET /bookings/:id/access-code]
-        D2 --> D3[Return: code_encrypted, iv, tag, valid_from, valid_until]
-        D3 --> D4[App derives key locally from booking_id]
-        D4 --> D5[App decrypts code on-device]
-        D5 --> D6[Display: PIN + QR + BLE unlock button]
+    subgraph Delivery[Giao mã]
+        CG7 --> D1[Push notification: "Phòng của bạn đã sẵn sàng"]
+        D1 --> D2[App gọi GET /bookings/:id/access-code]
+        D2 --> D3[Trả về: code_encrypted, iv, tag, valid_from, valid_until]
+        D3 --> D4[App derive key cục bộ từ booking_id]
+        D4 --> D5[App giải mã code trên thiết bị]
+        D5 --> D6[Hiển thị: PIN + QR + nút BLE unlock]
     end
 
-    subgraph Access[Guest Access]
+    subgraph Access[Truy cập của khách]
         D6 --> A1[BLE proximity unlock]
-        D6 --> A2[Manual PIN entry]
-        D6 --> A3[QR code scan]
-        A1 --> A4[Smartlock validates + UNLOCKS]
+        D6 --> A2[Nhập PIN thủ công]
+        D6 --> A3[Quét QR code]
+        A1 --> A4[Smartlock xác thực + UNLOCKS]
         A2 --> A4
         A3 --> A4
-        A4 --> A5[Log access: booking_id, method, result, timestamp]
+        A4 --> A5[Log truy cập: booking_id, method, result, timestamp]
     end
 
-    subgraph Checkout[Checkout & Revocation]
-        A5 --> CO1[Guest taps Check-out OR valid_until reached]
-        CO1 --> CO2[Call Smartlock Provider: POST /devices/:id/codes/revoke]
+    subgraph Checkout[Check-out & Thu hồi]
+        A5 --> CO1[Khách nhấn Check-out HOẶC đạt valid_until]
+        CO1 --> CO2[Gọi Smartlock Provider: POST /devices/:id/codes/revoke]
         CO2 --> CO3[UPDATE smartlock_codes is_active = false]
         CO3 --> CO4[Publish CHECKOUT_COMPLETED event]
-        CO4 --> CO5[Room Service: slot transitions to CLEANING]
+        CO4 --> CO5[Room Service: slot chuyển sang CLEANING]
     end
 
-    CG7 -.->|Pre-download for offline| D6
-    CO5 -.->|After buffer| RoomAvailable[Room available]
+    CG7 -.->|Tải trước cho offline| D6
+    CO5 -.->|Sau buffer| RoomAvailable[Phòng khả dụng]
 
     style BC1 fill:#bbf,color:#000
     style CG6 fill:#bbf,color:#000
@@ -799,28 +799,28 @@ flowchart TD
     style CO5 fill:#dfd,color:#000
 ```
 
-### 6j. Encryption Key Hierarchy
+### 6j. Phân cấp khóa mã hóa
 
 ```mermaid
 flowchart TD
     K1[MASTER_ENCRYPTION_KEY<br/>(AWS KMS / HashiCorp Vault)] --> K2[Derived Key<br/>HMAC-SHA256(booking_id, MASTER_KEY)]
     K2 --> K3[AES-256-GCM per-access encryption]
 
-    subgraph Stored["Stored in smartlock_codes table"]
+    subgraph Stored["Lưu trong bảng smartlock_codes"]
         S1[code_encrypted]
         S2[iv]
         S3[tag]
         S4[key_hash]
     end
 
-    subgraph Transient["Transient (memory only)"]
-        T1[code_plaintext from provider]
+    subgraph Transient["Tạm thời (chỉ trong bộ nhớ)"]
+        T1[code_plaintext từ provider]
     end
 
-    subgraph NeverStored["Never stored"]
+    subgraph NeverStored["Không bao giờ lưu trữ"]
         N1[MASTER_ENCRYPTION_KEY]
         N2[derived_key]
-        N3[device_id in client response]
+        N3[device_id trong response client]
     end
 
     K2 --> S1
@@ -835,44 +835,44 @@ flowchart TD
     style N3 fill:#fbb,color:#000
 ```
 
-### 6k. Access Code Lifecycle
+### 6k. Vòng đời mã truy cập
 
 ```mermaid
 stateDiagram-v2
     [*] --> GENERATED: BOOKING_CONFIRMED
 
-    GENERATED --> ACTIVE: valid_from reached
-    GENERATED --> EXPIRED_UNCLAIMED: valid_until passed
+    GENERATED --> ACTIVE: đã đến valid_from
+    GENERATED --> EXPIRED_UNCLAIMED: đã qua valid_until
     GENERATED --> CANCELLED: Booking CANCELLED
 
-    ACTIVE --> ACTIVE: Re-enter (unlimited)
-    ACTIVE --> USED: First unlock
-    ACTIVE --> REVOKED: Host/system revokes
-    ACTIVE --> EXPIRED: valid_until passed
+    ACTIVE --> ACTIVE: Vào lại (không giới hạn)
+    ACTIVE --> USED: Lần mở khóa đầu tiên
+    ACTIVE --> REVOKED: Host/hệ thống thu hồi
+    ACTIVE --> EXPIRED: đã qua valid_until
 
-    USED --> ACTIVE: Guest leaves + re-enters
-    USED --> REVOKED: Host revokes
-    USED --> EXPIRED: valid_until passed
+    USED --> ACTIVE: Khách rời đi + vào lại
+    USED --> REVOKED: Host thu hồi
+    USED --> EXPIRED: đã qua valid_until
 
-    REVOKED --> [*]: Purged after 30 days
+    REVOKED --> [*]: Xóa sau 30 ngày
     EXPIRED --> [*]: Cron cleanup
-    CANCELLED --> [*]: Purged after 7 days
+    CANCELLED --> [*]: Xóa sau 7 ngày
 ```
 
-### 6l. Fallback Chain
+### 6l. Chuỗi dự phòng
 
 ```mermaid
 flowchart TD
-    A[Guest arrives] --> B{BLE proximity}
-    B -->|Success| Z[Unlock]
-    B -->|Fail| C{QR code}
-    C -->|Success| Z
-    C -->|Fail| D{NFC tap}
-    D -->|Success| Z
-    D -->|Fail| E{PIN entry}
-    E -->|Wrong 3x| F[Lock out 30s]
-    E -->|Success| Z
-    E -->|Expired / Revoked| G[Contact host]
+    A[Khách đến] --> B{BLE proximity}
+    B -->|Thành công| Z[Mở khóa]
+    B -->|Thất bại| C{QR code}
+    C -->|Thành công| Z
+    C -->|Thất bại| D{NFC tap}
+    D -->|Thành công| Z
+    D -->|Thất bại| E{PIN entry}
+    E -->|Sai 3 lần| F[Khóa 30s]
+    E -->|Thành công| Z
+    E -->|Hết hạn / Bị thu hồi| G[Liên hệ host]
     F --> G
 
     style Z fill:#dfd,color:#000
@@ -880,7 +880,7 @@ flowchart TD
     style F fill:#fbb,color:#000
 ```
 
-### 6m. Smartlock Provider Adapter Pattern
+### 6m. Adapter Pattern cho Smartlock Provider
 
 ```mermaid
 flowchart LR
@@ -921,7 +921,7 @@ flowchart LR
     style Adapters fill:#ffe0b0,color:#000
 ```
 
-### 6n. Offline Mode — Pre-Download Strategy
+### 6n. Chế độ Offline — Chiến lược tải trước
 
 ```mermaid
 sequenceDiagram
@@ -932,19 +932,19 @@ sequenceDiagram
     Note over App: Booking CONFIRMED
     App->>BookingService: GET /bookings/:id/access-code
     BookingService-->>App: { code_encrypted, iv, tag, valid_from, valid_until }
-    App->>App: Re-encrypt with device-bound key
-    App->>SecureStorage: Store encrypted payload
-    Note over App: Stored for offline use
+    App->>App: Mã hóa lại với device-bound key
+    App->>SecureStorage: Lưu payload đã mã hóa
+    Note over App: Đã lưu để dùng offline
 
-    Note over App: Guest arrives offline
-    SecureStorage->>App: Retrieve encrypted payload
-    App->>App: Decrypt with device-bound key
-    App->>App: Check: valid_from <= now <= valid_until
-    App->>App: Decrypt code with HMAC-SHA256(booking_id, MASTER_KEY)
-    App->>App: Display PIN / BLE unlock
+    Note over App: Khách đến khi offline
+    SecureStorage->>App: Lấy payload đã mã hóa
+    App->>App: Giải mã với device-bound key
+    App->>App: Kiểm tra: valid_from <= now <= valid_until
+    App->>App: Giải mã mã bằng HMAC-SHA256(booking_id, MASTER_KEY)
+    App->>App: Hiển thị PIN / BLE unlock
 ```
 
-### 6a. Check-in Flow
+### 6a. Luồng Check-in
 
 ```mermaid
 sequenceDiagram
@@ -956,21 +956,21 @@ sequenceDiagram
     participant Message_Broker
 
     Note over Booking_Service: Booking is CONFIRMED
-    Guest->>App: Tap Check-in Now
+    Guest->>App: Nhấn Check-in Now
     App->>Booking_Service: GET /bookings/:id/checkin
     Booking_Service->>Booking_DB: SELECT booking + smartlock_codes
 
-    alt No existing code
+    alt Chưa có mã
         Booking_Service->>Smartlock_Provider: GET /devices/:device_id/code
         Smartlock_Provider-->>Booking_Service: code plaintext
         Booking_Service->>Booking_Service: AES-256-GCM encrypt code
         Booking_Service->>Booking_DB: INSERT smartlock_codes
-    else Code already exists
-        Booking_Service->>Booking_DB: SELECT existing code_encrypted
+    else Đã có mã
+        Booking_Service->>Booking_DB: SELECT code_encrypted hiện có
     end
 
     Booking_Service-->>App: code_encrypted
-    App->>App: AES-256-GCM decrypt locally
+    App->>App: AES-256-GCM decrypt cục bộ
 
     alt is_automated = true
         App->>Smartlock_Device: BLE auto-unlock
@@ -979,12 +979,12 @@ sequenceDiagram
         Booking_Service->>Booking_DB: UPDATE checked_in_at status = CHECKED_IN
         Booking_Service->>Message_Broker: Publish CHECKIN_COMPLETED
     else is_automated = false
-        App->>App: Display decrypted code to Guest
-        Guest->>Smartlock_Device: Enter code manually
+        App->>App: Hiển thị mã đã giải mã cho khách
+        Guest->>Smartlock_Device: Nhập mã thủ công
     end
 ```
 
-### 6b. Check-out and Code Revocation
+### 6b. Check-out và thu hồi mã
 
 ```mermaid
 sequenceDiagram
@@ -996,7 +996,7 @@ sequenceDiagram
     participant Message_Broker
     participant Room_Service
 
-    Guest->>App: Tap Check-out
+    Guest->>App: Nhấn Check-out
     App->>Booking_Service: POST /bookings/:id/checkout
     Booking_Service->>Booking_DB: SELECT FOR UPDATE smartlock_codes
     Booking_Service->>Smartlock_Provider: POST /devices/:device_id/revoke
@@ -1008,22 +1008,22 @@ sequenceDiagram
     Booking_Service-->>App: 200 OK
 
     Message_Broker->>Room_Service: Deliver CHECKOUT_COMPLETED
-    Room_Service->>Room_Service: Mark slot available
+    Room_Service->>Room_Service: Đánh dấu slot khả dụng
 ```
 
-### 6c. Smartlock Security Architecture
+### 6c. Kiến trúc bảo mật Smartlock
 
 ```mermaid
 flowchart TD
     subgraph BookingServiceDB[Booking Service DB]
-        B1[bookings table]
-        B2[smartlock_codes table]
-        B3[code_encrypted field]
-        B4[code_plaintext NEVER stored]
+        B1[bảng bookings]
+        B2[bảng smartlock_codes]
+        B3[trường code_encrypted]
+        B4[code_plaintext KHÔNG BAO GIỜ lưu trữ]
     end
 
     subgraph RoomServiceDB[Room Service DB]
-        R1[rooms table smartlock_device_id]
+        R1[bảng rooms - smartlock_device_id]
     end
 
     subgraph SmartlockProvider[Smartlock Provider]
@@ -1034,8 +1034,8 @@ flowchart TD
     R1 -->|device_id| P1
     Booking_Service -->|GET code| P2
     P2 -->|plaintext| B3
-    B3 -->|encrypted at rest| B2
-    B2 -->|decrypted in App only| App
+    B3 -->|mã hóa khi lưu trữ| B2
+    B2 -->|giải mã chỉ trong App| App
 
     style B4 fill:#bbf,color:#000
     style B3 fill:#fbb,color:#000
@@ -1043,59 +1043,59 @@ flowchart TD
 
 ---
 
-## 7. OTA Inventory Sync
+## 7. Đồng bộ Inventory OTA
 
-### 7a. Three Sync Methods
+### 7a. Ba phương thức đồng bộ
 
 ```mermaid
 flowchart TD
-    ROOT[Inventory Sync] --> ICAL[iCalendar Sync]
-    ROOT --> DAPI[Direct API Integration]
+    ROOT[Đồng bộ Inventory] --> ICAL[Đồng bộ iCalendar]
+    ROOT --> DAPI[Tích hợp API trực tiếp]
     ROOT --> CM[Channel Manager]
 
-    ICAL --> ICAL_C[Fetch .ics every 15-30 min]
-    ICAL_C --> ICAL_P[Parse VEVENT Batch update DB]
-    ICAL_C --> ICAL_L[Lag hours]
-    ICAL_L --> ICAL_U[Use case small scale]
+    ICAL --> ICAL_C[Fetch .ics mỗi 15-30 phút]
+    ICAL_C --> ICAL_P[Parse VEVENT - Cập nhật DB theo batch]
+    ICAL_C --> ICAL_L[Trễ vài giờ]
+    ICAL_L --> ICAL_U[Trường hợp sử dụng quy mô nhỏ]
 
-    DAPI --> PUSH[Push Protocol internal sends POST]
-    DAPI --> PULL[Pull Webhook OTA sends webhook]
+    DAPI --> PUSH[Giao thức Push - hệ thống nội bộ gửi POST]
+    DAPI --> PULL[Pull Webhook - OTA gửi webhook]
     PUSH --> PUSH_R[Real-time]
     PULL --> PULL_R[Real-time]
-    PUSH_R --> DAPI_U[Use case mid scale]
+    PUSH_R --> DAPI_U[Trường hợp sử dụng quy mô trung bình]
     PULL_R --> DAPI_U
 
-    CM --> CM_RT[Real-time under 5 seconds]
-    CM --> CM_EX[SiteMinder or Channex Single gateway]
-    CM --> CM_U[Recommended for large scale]
+    CM --> CM_RT[Real-time dưới 5 giây]
+    CM --> CM_EX[SiteMinder hoặc Channex - Cổng đơn lẻ]
+    CM --> CM_U[Khuyến nghị cho quy mô lớn]
 ```
 
-### 7b. iCalendar Sync Flow
+### 7b. Luồng đồng bộ iCalendar
 
 ```mermaid
 flowchart TD
-    A[Cron every 15-30 min] --> B[Fetch .ics from OTA URL]
-    B --> C[Parse VEVENT blocks UID DTSTART DTEND]
-    C --> D{Parse error?}
+    A[Cron mỗi 15-30 phút] --> B[Fetch .ics từ URL OTA]
+    B --> C[Parse các block VEVENT - UID DTSTART DTEND]
+    C --> D{Lỗi parse?}
 
-    D -->|Yes| E[Log error Skip this .ics]
-    D -->|No| F[Map iCal event to internal format]
+    D -->|Có| E[Log lỗi - Bỏ qua .ics này]
+    D -->|Không| F[Map sự kiện iCal sang định dạng nội bộ]
 
-    F --> G[Batch process events]
-    G --> H{Event type?}
+    F --> G[Xử lý batch các sự kiện]
+    G --> H{Loại sự kiện?}
 
-    H -->|BOOKED| I[UPDATE booked_units + 1 status = CLOSED if full]
-    H -->|AVAILABLE| J[UPDATE booked_units - 1 status = OPEN]
+    H -->|BOOKED| I[UPDATE booked_units + 1 - status = CLOSED nếu đầy]
+    H -->|AVAILABLE| J[UPDATE booked_units - 1 - status = OPEN]
     H -->|BLOCKED| K[UPDATE status = BLOCKED]
 
-    I --> L[Write to inventory_sync_log]
+    I --> L[Ghi vào inventory_sync_log]
     J --> L
     K --> L
-    L --> M[End]
+    L --> M[Kết thúc]
     E --> M
 ```
 
-### 7c. Channel Manager Real-time Sync
+### 7c. Đồng bộ Channel Manager Real-time
 
 ```mermaid
 sequenceDiagram
@@ -1104,13 +1104,13 @@ sequenceDiagram
     participant Room_Service_API
     participant Room_Service_DB
 
-    Note over OTA,Room_Service_DB: PULL: Room Service polls Channel Manager
+    Note over OTA,Room_Service_DB: PULL: Room Service poll Channel Manager
     Room_Service_API->>Channel_Manager: GET /availability property_id from to
     Channel_Manager-->>Room_Service_API: rooms and rates JSON
     Room_Service_API->>Room_Service_DB: Batch upsert room_availability
-    Room_Service_DB-->>Room_Service_API: Updated
+    Room_Service_DB-->>Room_Service_API: Đã cập nhật
 
-    Note over OTA,Room_Service_DB: PUSH: Real-time booking notification
+    Note over OTA,Room_Service_DB: PUSH: Thông báo booking real-time
     OTA->>Channel_Manager: POST /bookings reservation
     Channel_Manager->>Room_Service_API: POST /internal/webhooks/booking
     Room_Service_API->>Room_Service_DB: BEGIN TRANSACTION
@@ -1124,11 +1124,11 @@ sequenceDiagram
 
 ---
 
-## 8. Full System Context
+## 8. Context hệ thống đầy đủ
 
 ```mermaid
 flowchart TB
-    subgraph External[External Systems]
+    subgraph External[Hệ thống bên ngoài]
         OTA1[iCalendar Feed]
         OTA2[Direct API Webhook]
         OTA3[Channel Manager]
@@ -1218,24 +1218,24 @@ flowchart TB
 
 ---
 
-## 9. Atomic Update — Inventory Query Logic
+## 9. Atomic Update — Logic truy vấn Inventory
 
 ```mermaid
 flowchart TD
-    A[Incoming booking request] --> B[Atomic UPDATE statement]
+    A[Request booking đến] --> B[Câu lệnh Atomic UPDATE]
     B --> C[UPDATE room_availability]
     B --> D[SET on_hold_units = on_hold_units + 1]
     B --> E[WHERE availability gt 0]
     E --> F{"Rows affected = 1?"}
 
-    F -->|Yes| H[Hold SUCCESS Create PENDING record]
-    F -->|No| I[No availability Return 409]
+    F -->|Có| H[Hold SUCCESS - Tạo bản ghi PENDING]
+    F -->|Không| I[Không có availability - Return 409]
 
     style H fill:#bbf,color:#000
     style I fill:#fbb,color:#000
 ```
 
-**Inventory availability query (read-only):**
+**Truy vấn availability inventory (chỉ đọc):**
 
 ```sql
 SELECT room_id, start_time, end_time
@@ -1249,9 +1249,9 @@ ORDER BY date, start_time;
 
 ---
 
-## 10. Microservice Design Principles
+## 10. Nguyên tắc thiết kế Microservice
 
-### 10a. Database per Service
+### 10a. Database cho mỗi Service
 
 ```mermaid
 flowchart LR
@@ -1265,7 +1265,7 @@ flowchart LR
         D3[accounts<br/>host_profiles]
     end
     subgraph B[Message Broker]
-        MB[Kafka or RabbitMQ]
+        MB[Kafka hoặc RabbitMQ]
     end
 
     D1 -.-> MB
@@ -1273,27 +1273,27 @@ flowchart LR
     D3 -.-> MB
 ```
 
-### 10b. Communication Rules
+### 10b. Quy tắc giao tiếp
 
-| Rule | Applied |
+| Quy tắc | Áp dụng |
 |------|---------|
-| No DB-level FK across services | UUID only no FK constraints |
-| Services communicate via events | All booking state changes via message broker |
-| Local data projection | Room Service has room_slot_bookings |
-| Outbox pattern | Every service has its own _events outbox |
-| Idempotency at consumer | Duplicate events safely ignored |
-| API for queries events for state | Reads go through API state changes via events |
+| Không có FK cấp DB giữa các service | Chỉ UUID - không có ràng buộc FK |
+| Service giao tiếp qua events | Mọi thay đổi trạng thái booking qua message broker |
+| Local data projection | Room Service có room_slot_bookings |
+| Outbox pattern | Mỗi service có _events outbox riêng |
+| Idempotency ở consumer | Sự kiện trùng lặp được bỏ qua an toàn |
+| API cho query - events cho state | Đọc qua API - thay đổi trạng thái qua events |
 
-### 10c. Data Ownership
+### 10c. Quyền sở hữu dữ liệu
 
-| Data | Owner | Consumers |
+| Dữ liệu | Owner | Consumers |
 |------|-------|-----------|
-| room_availability | Room Service | Booking Service reads OTA Sync writes |
+| room_availability | Room Service | Booking Service đọc - OTA Sync ghi |
 | room_slot_bookings | Room Service | Booking Service event-driven |
 | bookings | Booking Service | Room Service event-driven |
-| smartlock_codes | Booking Service | Smartlock Provider App |
-| accounts | User Service | Room Service Booking Service reads UUID only |
-| properties | Room Service | OTA Sync reads |
+| smartlock_codes | Booking Service | Smartlock Provider - App |
+| accounts | User Service | Room Service - Booking Service chỉ đọc UUID |
+| properties | Room Service | OTA Sync đọc |
 
 ### 10d. Saga Pattern
 
@@ -1305,27 +1305,27 @@ sequenceDiagram
     participant Booking_Service
     participant Payment_Gateway
 
-    Guest->>Room_Service: Reserve slot Step 1 of Saga
+    Guest->>Room_Service: Reserve slot - Bước 1 của Saga
     Room_Service->>Room_Service: Reserve availability
     Room_Service->>Message_Broker: Publish ROOM_AVAILABILITY_RESERVED
     Room_Service-->>Guest: 200 slot reserved
 
     Message_Broker->>Booking_Service: Deliver event
-    Booking_Service->>Booking_Service: Create booking record + VietQR
+    Booking_Service->>Booking_Service: Tạo bản ghi booking + VietQR
 
-    Note over Booking_Service,Payment_Gateway: Compensating transaction on failure
+    Note over Booking_Service,Payment_Gateway: Compensating transaction khi thất bại
     Payment_Gateway-->>Booking_Service: Payment timeout
-    Booking_Service->>Booking_Service: Cancel booking
+    Booking_Service->>Booking_Service: Hủy booking
     Booking_Service->>Message_Broker: Publish BOOKING_CANCELLED
     Message_Broker->>Room_Service: Deliver event
-    Room_Service->>Room_Service: Release availability slot
+    Room_Service->>Room_Service: Giải phóng availability slot
 ```
 
 ---
 
-## 11. Data Integrity — All Mechanisms
+## 11. Toàn vẹn dữ liệu — Tất cả cơ chế
 
-### 11a. Integrity Layers Overview
+### 11a. Tổng quan các lớp toàn vẹn
 
 ```mermaid
 flowchart TB
@@ -1335,29 +1335,29 @@ flowchart TB
         RATE[Rate Limiting]
     end
 
-    subgraph DBConstraint[Database Constraints]
+    subgraph DBConstraint[Ràng buộc Database]
         CHECK[CHECK Constraints]
         UNIQUE[UNIQUE Constraints]
-        FK[FK Constraints within service]
+        FK[FK Constraints trong service]
         NOTNULL[NOT NULL Constraints]
         PARTIAL[Partial Index]
     end
 
-    subgraph Concurrency[Concurrency Control]
+    subgraph Concurrency[Kiểm soát Concurrency]
         REDIS[Redis SETNX Lock]
         PG[PostgreSQL SELECT FOR UPDATE]
         ADVISORY[Advisory Locks]
         VERSION[Optimistic Lock version]
     end
 
-    subgraph BusinessRules[Business Rules]
-        AVAIL[Atomic Availability Formula]
-        BUFFER[buffer_minutes Enforcement]
-        TRANSITION[State Transition Guard]
-        DOUBLE[Double Booking Prevention]
+    subgraph BusinessRules[Quy tắc nghiệp vụ]
+        AVAIL[Công thức Atomic Availability]
+        BUFFER[Thực thi buffer_minutes]
+        TRANSITION[Guard chuyển trạng thái]
+        DOUBLE[Ngăn chặn Double Booking]
     end
 
-    subgraph EventIntegrity[Event Integrity]
+    subgraph EventIntegrity[Toàn vẹn sự kiện]
         OUTBOX[Transactional Outbox]
         IDEMPOTENT[Consumer Idempotency]
         DEAD[Dead Letter Queue]
@@ -1367,7 +1367,7 @@ flowchart TB
     subgraph AuditTrail[Audit Trail]
         TIMESTAMP[updated_at timestamps]
         SOFT[Soft Delete deleted_at]
-        AUDIT[Audit Logs table]
+        AUDIT[Bảng Audit Logs]
     end
 
     APILayer --> DBConstraint
@@ -1377,11 +1377,11 @@ flowchart TB
     EventIntegrity --> AuditTrail
 ```
 
-### 11b. Atomic Availability Formula — The Gatekeeper
+### 11b. Công thức Atomic Availability — Người gác cổng
 
 ```mermaid
 flowchart TD
-    A[Incoming booking: room_id date start_time] --> B[Atomic UPDATE]
+    A[Booking đến: room_id date start_time] --> B[Atomic UPDATE]
     B --> C[UPDATE room_availability]
     B --> D[SET on_hold_units = on_hold_units + 1]
     B --> E[WHERE id = :slot_id]
@@ -1389,21 +1389,21 @@ flowchart TD
     B --> G[ - booked_units - on_hold_units > 0]
 
     F --> H{"Rows affected = 1?"}
-    H -->|Yes| I[INSERT room_slot_bookings PENDING]
-    H -->|No| J[INSERT room_booking_events FAILED]
-    H -->|No| K[Return 409 No availability]
+    H -->|Có| I[INSERT room_slot_bookings PENDING]
+    H -->|Không| J[INSERT room_booking_events FAILED]
+    H -->|Không| K[Return 409 Không có availability]
     I --> L[COMMIT]
-    L --> M[Increment version]
+    L --> M[Tăng version]
     M --> N[Return slot_booking_id]
 
     style I fill:#bbf,color:#000
     style K fill:#fbb,color:#000
 ```
 
-### 11c. CHECK Constraints — Database Level Enforcement
+### 11c. CHECK Constraints — Thực thi ở cấp Database
 
 ```sql
--- Prevent negative inventory values at DB level
+-- Ngăn giá trị inventory âm ở cấp DB
 ALTER TABLE room_availability ADD CONSTRAINT
     chk_non_negative_units CHECK (
         booked_units >= 0
@@ -1411,7 +1411,7 @@ ALTER TABLE room_availability ADD CONSTRAINT
         AND booked_units + on_hold_units <= total_units + overbooking_buffer
     );
 
--- Prevent invalid rental configurations
+-- Ngăn cấu hình rental không hợp lệ
 ALTER TABLE rooms ADD CONSTRAINT
     chk_rental_config CHECK (
         rental_type IN ('DAILY', 'HOURLY', 'BOTH')
@@ -1420,12 +1420,12 @@ ALTER TABLE rooms ADD CONSTRAINT
         AND base_price > 0
     );
 
--- Prevent past dates for availability slots
+-- Ngăn ngày quá khứ cho slot availability
 ALTER TABLE room_availability ADD CONSTRAINT
     chk_future_date CHECK (date >= CURRENT_DATE);
 ```
 
-### 11d. Optimistic Locking — Version Field
+### 11d. Optimistic Locking — Trường version
 
 ```mermaid
 sequenceDiagram
@@ -1435,70 +1435,70 @@ sequenceDiagram
 
     App->>Room_Service: PATCH /rooms/:id
     Room_Service->>Room_DB: SELECT * FROM rooms WHERE id = :id
-    Room_DB-->>Room_Service: room with version = 5
-    Room_Service->>Room_Service: Apply business logic update
+    Room_DB-->>Room_Service: room với version = 5
+    Room_Service->>Room_Service: Áp dụng logic nghiệp vụ
     Room_Service->>Room_DB: UPDATE rooms SET version = version + 1 WHERE id = :id AND version = 5
     Room_DB-->>Room_Service: rows_affected = 1
 
-    alt Version mismatch (concurrent update)
+    alt Không khớp version (cập nhật đồng thời)
         Room_DB-->>Room_Service: rows_affected = 0
-        Room_Service-->>App: 409 Conflict: Concurrent modification detected
-    else Success
-        Room_Service-->>App: 200 OK updated
+        Room_Service-->>App: 409 Conflict: Phát hiện cập nhật đồng thời
+    else Thành công
+        Room_Service-->>App: 200 OK đã cập nhật
     end
 ```
 
-### 11e. Consumer Idempotency — Duplicate Event Handling
+### 11e. Consumer Idempotency — Xử lý sự kiện trùng lặp
 
 ```mermaid
 flowchart TD
-    A[Event arrives from broker] --> B{Event ID in processed_events?}
-    B -->|Yes| C[ACK message skip processing]
-    B -->|No| D[Begin transaction]
-    D --> E[Check event_id in idempotency table]
-    E --> F{Already processed?}
-    F -->|Yes| G[ACK skip]
-    F -->|No| H[Process business logic]
-    H --> I[UPDATE idempotency: event_id processed]
+    A[Sự kiện đến từ broker] --> B{Event ID trong processed_events?}
+    B -->|Có| C[ACK message - bỏ qua xử lý]
+    B -->|Không| D[Bắt đầu transaction]
+    D --> E[Kiểm tra event_id trong bảng idempotency]
+    E --> F{Đã xử lý?}
+    F -->|Có| G[ACK - bỏ qua]
+    F -->|Không| H[Xử lý logic nghiệp vụ]
+    H --> I[UPDATE idempotency: event_id đã xử lý]
     I --> J[COMMIT]
-    J --> K[ACK to broker]
+    J --> K[ACK tới broker]
 
     style C fill:#bbf,color:#000
     style G fill:#bbf,color:#000
 ```
 
-### 11f. Soft Delete Pattern — Protect Data from Accidental Deletion
+### 11f. Soft Delete Pattern — Bảo vệ dữ liệu khỏi xóa nhầm
 
 ```mermaid
 flowchart LR
     subgraph HardDelete
         HD1[DELETE FROM rooms WHERE id = :id]
-        HD2[Room data permanently lost]
-        HD3[Related bookings become orphaned]
-        HD4[Audit trail completely gone]
+        HD2[Dữ liệu phòng bị mất vĩnh viễn]
+        HD3[Booking liên quan trở thành mồ côi]
+        HD4[Audit trail hoàn toàn biến mất]
         HD1 --> HD2 --> HD3 --> HD4
     end
 
     subgraph SoftDelete
         SD1[UPDATE rooms SET deleted_at = current_timestamp WHERE id = :id]
-        SD2[Room data preserved]
-        SD3[Related bookings stay linked]
-        SD4[Audit trail intact]
-        SD5[Room hidden from queries by default]
+        SD2[Dữ liệu phòng được bảo toàn]
+        SD3[Booking liên quan vẫn liên kết]
+        SD4[Audit trail nguyên vẹn]
+        SD5[Phòng bị ẩn khỏi truy vấn theo mặc định]
         SD1 --> SD2 --> SD3 --> SD4 --> SD5
     end
 ```
 
 ```sql
--- Query pattern: always filter deleted_at
+-- Mẫu truy vấn: luôn lọc deleted_at
 CREATE INDEX idx_rooms_active ON rooms (property_id)
     WHERE deleted_at IS NULL;
 
--- Restore deleted record
+-- Khôi phục bản ghi đã xóa
 UPDATE rooms SET deleted_at = NULL WHERE id = :id;
 ```
 
-### 11g. Event Outbox Pattern — Guaranteed Delivery
+### 11g. Event Outbox Pattern — Đảm bảo giao hàng
 
 ```mermaid
 sequenceDiagram
@@ -1508,126 +1508,126 @@ sequenceDiagram
     participant OutboxRelay
     participant Broker
 
-    AppLayer->>RoomService: Booking request
+    AppLayer->>RoomService: Yêu cầu booking
     RoomService->>RoomDB: BEGIN TRANSACTION
     RoomService->>RoomDB: UPDATE room_availability (atomic)
     RoomService->>RoomDB: UPDATE room_slot_bookings
     RoomService->>RoomDB: INSERT room_booking_events (PENDING)
     RoomService->>RoomDB: COMMIT
-    Note over RoomDB: DB write + event insert in ONE atomic operation
+    Note over RoomDB: DB write + event insert trong MỘT thao tác atomic
 
-    loop Every 1 second
+    loop Mỗi 1 giây
         OutboxRelay->>RoomDB: SELECT * FROM room_booking_events WHERE status = PENDING
-        RoomDB-->>OutboxRelay: Pending events
+        RoomDB-->>OutboxRelay: Các sự kiện đang chờ
         OutboxRelay->>Broker: Publish event
         Broker-->>OutboxRelay: Published OK
         OutboxRelay->>RoomDB: UPDATE status = PUBLISHED
         OutboxRelay->>RoomDB: UPDATE published_at = now()
     end
 
-    Note over OutboxRelay,Broker: If broker fails: retry with backoff. Max 5 retries. Then status = FAILED and alert Admin.
+    Note over OutboxRelay,Broker: Nếu broker thất bại: retry với backoff. Tối đa 5 lần. Sau đó status = FAILED và cảnh báo Admin.
 ```
 
-### 11h. Dead Letter Queue — Failed Event Handling
+### 11h. Dead Letter Queue — Xử lý sự kiện thất bại
 
 ```mermaid
 flowchart TD
-    A[Event published to broker] --> B{Delivered to consumer?}
-    B -->|Yes| C[Consumer ACK]
-    B -->|No after max retries| D[Move to DLQ topic]
-    D --> E[Alert Admin]
+    A[Sự kiện publish tới broker] --> B{Đã giao tới consumer?}
+    B -->|Có| C[Consumer ACK]
+    B -->|Không sau max retries| D[Chuyển sang DLQ topic]
+    D --> E[Cảnh báo Admin]
 
-    C --> F{Processing successful?}
-    F -->|Yes| G[Commit offset]
-    F -->|No| H[Consumer NACK]
+    C --> F{Xử lý thành công?}
+    F -->|Có| G[Commit offset]
+    F -->|Không| H[Consumer NACK]
     H --> B
 
-    E --> I{Manual action needed?}
-    I -->|Yes| J[Admin reviews DLQ]
-    J --> K[Republish or compensate]
-    I -->|No| L[Auto-retry with delay]
+    E --> I{Cần hành động thủ công?}
+    I -->|Có| J[Admin review DLQ]
+    J --> K[Republish hoặc compensate]
+    I -->|Không| L[Auto-retry với delay]
     K --> A
     L --> A
 ```
 
-### 11i. Data Integrity Checklist
+### 11i. Checklist toàn vẹn dữ liệu
 
-| Layer | Mechanism | Protects Against |
+| Lớp | Cơ chế | Bảo vệ chống lại |
 |-------|-----------|----------------|
-| API | Idempotency key | Duplicate booking requests |
-| API | Rate limiting | Flash sale abuse |
-| API | DTO validation | Invalid data entering system |
-| DB | CHECK constraints | Negative inventory values |
-| DB | Partial index | Queries on deleted rows |
-| DB | NOT NULL | Missing critical fields |
-| DB | Optimistic lock version | Concurrent updates to same row |
-| DB | Advisory locks | Multi-room booking conflicts |
-| Business | Atomic UPDATE formula | Overbooking |
-| Business | State transition guard | Closing room with active orders |
-| Business | buffer_minutes enforcement | Overlapping HOURLY bookings |
-| Event | Outbox pattern | Event lost if broker down |
-| Event | Consumer idempotency | Duplicate event processing |
-| Event | DLQ + retry | Silent event failure |
+| API | Idempotency key | Request đặt phòng trùng lặp |
+| API | Rate limiting | Lạm dụng Flash sale |
+| API | DTO validation | Dữ liệu không hợp lệ đi vào hệ thống |
+| DB | CHECK constraints | Giá trị inventory âm |
+| DB | Partial index | Truy vấn trên các row đã xóa |
+| DB | NOT NULL | Thiếu trường quan trọng |
+| DB | Optimistic lock version | Cập nhật đồng thời cùng row |
+| DB | Advisory locks | Xung đột booking nhiều phòng |
+| Business | Công thức Atomic UPDATE | Overbooking |
+| Business | Guard chuyển trạng thái | Đóng phòng khi có đơn đang hoạt động |
+| Business | Thực thi buffer_minutes | Booking HOURLY chồng lấn |
+| Event | Outbox pattern | Sự kiện bị mất nếu broker down |
+| Event | Consumer idempotency | Xử lý sự kiện trùng lặp |
+| Event | DLQ + retry | Sự kiện thất bại âm thầm |
 | Audit | updated_at | Cache invalidation |
-| Audit | deleted_at | Soft delete protection |
-| Audit | AUDIT_LOGS | Full change history |
+| Audit | deleted_at | Bảo vệ soft delete |
+| Audit | AUDIT_LOGS | Lịch sử thay đổi đầy đủ |
 
 ---
 
-### 6d. Full Automated Check-in Architecture
+### 6d. Kiến trúc Auto Check-in đầy đủ
 
 ```mermaid
 flowchart TD
-    subgraph BookingConfirmed[Booking CONFIRMED Event]
-        E1[Booking CONFIRMED via payment webhook]
-        E2[Event: BOOKING_CONFIRMED published]
+    subgraph BookingConfirmed[Sự kiện Booking CONFIRMED]
+        E1[Booking CONFIRMED qua payment webhook]
+        E2[Sự kiện: BOOKING_CONFIRMED published]
     end
 
-    subgraph AutomationDecision[Automation Gate]
+    subgraph AutomationDecision[Cổng quyết định tự động]
         E1 --> D1{is_automated = true?}
-        D1 -->|Yes| D2[Generate access code]
-        D1 -->|No| D3[Notify Host to provide code]
+        D1 -->|Có| D2[Tạo mã truy cập]
+        D1 -->|Không| D3[Thông báo Host cung cấp mã]
     end
 
-    subgraph CodeGeneration[Code Generation Pipeline]
-        D2 --> G1[Calculate valid_from = checkin_time]
-        G1 --> G2[Calculate valid_until = checkout_time + buffer_minutes]
-        G2 --> G3[Generate code via provider API or local RNG]
-        G3 --> G4[AES-256-GCM encrypt with room-specific key]
-        G4 --> G5[Store code_encrypted in smartlock_codes table]
-        G5 --> G6[Publish CODE_GENERATED event to broker]
+    subgraph CodeGeneration[Pipeline tạo mã]
+        D2 --> G1[Tính valid_from = checkin_time]
+        G1 --> G2[Tính valid_until = checkout_time + buffer_minutes]
+        G2 --> G3[Tạo mã qua provider API hoặc local RNG]
+        G3 --> G4[AES-256-GCM encrypt với room-specific key]
+        G4 --> G5[Lưu code_encrypted vào bảng smartlock_codes]
+        G5 --> G6[Publish sự kiện CODE_GENERATED tới broker]
     end
 
-    subgraph DeliveryLayer[Guest Delivery]
-        G6 --> DL1[Push notification: Your room is ready]
-        DL1 --> DL2[Code pushed to guest app via FCM/APNs]
-        DL2 --> DL3[Code cached locally in app for offline access]
-        DL3 --> DL4[Display: Access code + QR code + BLE auto-unlock]
+    subgraph DeliveryLayer[Giao mã cho khách]
+        G6 --> DL1[Push notification: Phòng của bạn đã sẵn sàng]
+        DL1 --> DL2[Mã được push tới guest app qua FCM/APNs]
+        DL2 --> DL3[Mã được cache cục bộ trong app để truy cập offline]
+        DL3 --> DL4[Hiển thị: Mã truy cập + QR code + BLE auto-unlock]
     end
 
-    subgraph AccessLayer[Guest Access]
-        DL4 --> A1[Guest arrives at property]
-        A1 --> A2{Device connectivity}
-        A2 -->|BLE enabled| A3[Proximity auto-unlock via BLE]
-        A2 -->|BLE disabled| A4[Manual PIN entry on keypad]
-        A2 -->|QR scanner| A5[QR code scanned on smartlock screen]
-        A3 --> A6[Smartlock unlocks, event logged]
+    subgraph AccessLayer[Truy cập của khách]
+        DL4 --> A1[Khách đến property]
+        A1 --> A2{Kết nối thiết bị}
+        A2 -->|BLE bật| A3[Auto-unlock qua proximity BLE]
+        A2 -->|BLE tắt| A4[Nhập PIN thủ công trên keypad]
+        A2 -->|Quét QR| A5[QR code được quét trên màn hình smartlock]
+        A3 --> A6[Smartlock mở khóa, sự kiện được log]
         A4 --> A6
         A5 --> A6
         A6 --> A7[Audit log: unlock_timestamp + method + success/fail]
     end
 
-    subgraph CheckoutLayer[Check-out & Revocation]
-        CL1[Check-out time reached OR guest taps Check-out]
-        CL1 --> CL2[Revoke code via provider API]
-        CL2 --> CL3[Mark smartlock_codes is_active = false]
-        CL3 --> CL4[Publish CHECKOUT_COMPLETED event]
-        CL4 --> CL5[Room slot released after buffer_minutes]
+    subgraph CheckoutLayer[Check-out & Thu hồi]
+        CL1[Đến thời gian check-out HOẶC khách nhấn Check-out]
+        CL1 --> CL2[Thu hồi mã qua provider API]
+        CL2 --> CL3[Đánh dấu smartlock_codes is_active = false]
+        CL3 --> CL4[Publish sự kiện CHECKOUT_COMPLETED]
+        CL4 --> CL5[Room slot được giải phóng sau buffer_minutes]
     end
 
     G6 --> CL1
     A7 --> AuditDB[(Audit DB)]
-    CL5 --> RoomAvailable[Room available for next booking]
+    CL5 --> RoomAvailable[Phòng khả dụng cho booking tiếp theo]
 
     style D1 fill:#ff9,color:#000
     style G4 fill:#bbf,color:#000
@@ -1635,7 +1635,7 @@ flowchart TD
     style AuditDB fill:#f9f,color:#000
 ```
 
-### 6e. Smartlock Provider Integration — Adapter Pattern
+### 6e. Tích hợp Smartlock Provider — Adapter Pattern
 
 ```mermaid
 flowchart LR
@@ -1689,70 +1689,70 @@ flowchart LR
     style AdapterLayer fill:#ffe0b0,color:#000
 ```
 
-### 6f. Access Code State Machine
+### 6f. Máy trạng thái mã truy cập
 
 ```mermaid
 stateDiagram-v2
     [*] --> GENERATED: Booking CONFIRMED
 
-    GENERATED --> ACTIVE: valid_from timestamp reached
-    GENERATED --> EXPIRED: checkout_time + buffer passed without activation
-    GENERATED --> CANCELLED: Booking CANCELLED before check-in
+    GENERATED --> ACTIVE: đã đến valid_from
+    GENERATED --> EXPIRED: checkout_time + buffer đã qua mà chưa kích hoạt
+    GENERATED --> CANCELLED: Booking CANCELLED trước check-in
 
-    ACTIVE --> ACTIVE: Guest re-enters (unlimited)
-    ACTIVE --> USED: First successful unlock
-    ACTIVE --> REVOKED: Host or system revokes early
-    ACTIVE --> EXPIRED: valid_until timestamp passed
+    ACTIVE --> ACTIVE: Khách vào lại (không giới hạn)
+    ACTIVE --> USED: Mở khóa thành công lần đầu
+    ACTIVE --> REVOKED: Host hoặc hệ thống thu hồi sớm
+    ACTIVE --> EXPIRED: đã qua valid_until
 
-    USED --> [*]: Checkout time reached
+    USED --> [*]: Đã đến thời gian check-out
 
-    REVOKED --> [*]: Code permanently disabled
+    REVOKED --> [*]: Mã bị vô hiệu vĩnh viễn
 
-    EXPIRED --> [*]: Auto-cleanup by cron
+    EXPIRED --> [*]: Tự động dọn dẹp bởi cron
 
-    CANCELLED --> [*]: Code purged
+    CANCELLED --> [*]: Mã bị xóa
 ```
 
-### 6g. Offline Mode & Fallback Mechanisms
+### 6g. Chế độ Offline & Cơ chế dự phòng
 
 ```mermaid
 flowchart TD
-    subgraph PreArrival[Pre-Arrival]
+    subgraph PreArrival[Trước khi đến]
         P1[Booking CONFIRMED]
-        P1 --> P2[Generate code and encrypt]
-        P2 --> P3[Push encrypted code to guest app]
-        P3 --> P4[Code stored in app local storage: Encrypted vault]
-        P4 --> P5[App downloads code at booking confirmation]
+        P1 --> P2[Tạo mã và mã hóa]
+        P2 --> P3[Push mã đã mã hóa tới guest app]
+        P3 --> P4[Mã được lưu trong local storage của app: Encrypted vault]
+        P4 --> P5[App tải mã xuống tại thời điểm xác nhận booking]
     end
 
-    subgraph Arrival[Guest Arrival]
-        P5 --> A1[Guest arrives at door]
-        A1 --> A2{Device online?}
-        A2 -->|Online| A3[App attempts cloud unlock via provider API]
-        A3 --> A4{API responds?}
-        A4 -->|Success| A5[Lock opens, success logged]
-        A4 -->|Timeout / Error| A6{Retry < 3?}
-        A6 -->|Yes| A3
-        A6 -->|No| A7{Fallback enabled?}
-        A7 -->|Yes| F1[Show offline PIN from encrypted vault]
-        F1 --> F2[Guest enters PIN on smartlock keypad]
-        F2 --> F3[Smartlock verifies PIN locally, unlocks]
+    subgraph Arrival[Khách đến]
+        P5 --> A1[Khách đến trước cửa]
+        A1 --> A2{Thiết bị online?}
+        A2 -->|Online| A3[App thử mở khóa cloud qua provider API]
+        A3 --> A4{API có phản hồi?}
+        A4 -->|Thành công| A5[Khóa mở, thành công được log]
+        A4 -->|Timeout / Lỗi| A6{Retry < 3?}
+        A6 -->|Có| A3
+        A6 -->|Không| A7{Dự phòng được bật?}
+        A7 -->|Có| F1[Hiển thị offline PIN từ encrypted vault]
+        F1 --> F2[Khách nhập PIN trên keypad của smartlock]
+        F2 --> F3[Smartlock xác thực PIN cục bộ, mở khóa]
         A2 -->|Offline| A7
     end
 
-    subgraph FallbackChain[Fallback Priority]
-        F1 --> F4{Try QR code?}
-        F4 -->|Yes| F5[App displays dynamic QR]
-        F5 --> F6[Smartlock scans QR via camera]
-        F6 --> F7[QR validated against encrypted payload]
-        F4 -->|No| F8{Last resort: Contact Host?}
-        F8 --> F9[App shows host contact: Call / Chat]
-        F9 --> F10[Host unlocks via admin panel or physical key]
-        F10 --> F11[Access logged under host account]
+    subgraph FallbackChain[Thứ tự dự phòng]
+        F1 --> F4{Thử QR code?}
+        F4 -->|Có| F5[App hiển thị QR động]
+        F5 --> F6[Smartlock quét QR qua camera]
+        F6 --> F7[QR được xác thực với payload đã mã hóa]
+        F4 -->|Không| F8{Phương án cuối: Liên hệ Host?}
+        F8 --> F9[App hiển thị liên hệ host: Gọi / Chat]
+        F9 --> F10[Host mở khóa qua admin panel hoặc chìa khóa vật lý]
+        F10 --> F11[Truy cập được log dưới tài khoản host]
     end
 
-    subgraph PostAccess[Post-Access]
-        A5 --> POST1[Unlock event logged: timestamp, method, result]
+    subgraph PostAccess[Sau khi truy cập]
+        A5 --> POST1[Sự kiện mở khóa được log: timestamp, method, result]
         F3 --> POST1
         F7 --> POST1
         F11 --> POST1
@@ -1764,12 +1764,12 @@ flowchart TD
     style POST2 fill:#f9f,color:#000
 ```
 
-### 6h. Smartlock Access Audit Trail
+### 6h. Audit Trail truy cập Smartlock
 
 ```mermaid
 flowchart LR
-    subgraph UnlockAttempt[Unlock Attempt]
-        UA1[Unlock attempt detected]
+    subgraph UnlockAttempt[Lần thử mở khóa]
+        UA1[Phát hiện lần thử mở khóa]
         UA2[Log: timestamp, booking_id, room_id]
         UA3[Log: guest_id, device_fingerprint]
         UA4[Log: unlock_method BLE / PIN / QR / NFC]
@@ -1777,27 +1777,27 @@ flowchart LR
         UA1 --> UA2 --> UA3 --> UA4 --> UA5
     end
 
-    subgraph AlertLayer[Alerting]
-        UA5 --> AL1{Result = FAIL or BLOCKED?}
-        AL1 -->|Yes| AL2[Increment fail_count for this booking]
+    subgraph AlertLayer[Cảnh báo]
+        UA5 --> AL1{Result = FAIL hoặc BLOCKED?}
+        AL1 -->|Có| AL2[Tăng fail_count cho booking này]
         AL2 --> AL3{fail_count > 3?}
-        AL3 -->|Yes| AL4[Alert Host: repeated failed attempts]
-        AL3 -->|No| AL5[Log and continue]
-        AL1 -->|No| AL6[Reset fail_count to 0]
+        AL3 -->|Có| AL4[Cảnh báo Host: lần thử thất bại lặp lại]
+        AL3 -->|Không| AL5[Log và tiếp tục]
+        AL1 -->|Không| AL6[Reset fail_count về 0]
     end
 
-    subgraph AnalyticsLayer[Analytics]
-        UA5 --> AN1[Aggregate: unlock_count per booking]
-        AN1 --> AN2[Detect unusual patterns e.g. 3AM unlock]
-        AN2 --> AN3[Flag suspicious activity]
-        AN3 --> AN4[Notify Host or Admin]
-        AN2 -->|Normal| AN5[Update booking check-in analytics]
+    subgraph AnalyticsLayer[Phân tích]
+        UA5 --> AN1[Tổng hợp: unlock_count mỗi booking]
+        AN1 --> AN2[Phát hiện pattern bất thường ví dụ mở khóa lúc 3AM]
+        AN2 --> AN3[Đánh dấu hoạt động đáng ngờ]
+        AN3 --> AN4[Thông báo Host hoặc Admin]
+        AN2 -->|Bình thường| AN5[Cập nhật check-in analytics của booking]
     end
 
-    subgraph RetentionLayer[Data Retention]
-        UA5 --> RET1[Write to smartlock_access_logs table]
-        RET1 --> RET2[Retention: 90 days hot, 2 years archive]
-        RET2 --> RET3[GDPR: export on request, delete on retention]
+    subgraph RetentionLayer[Lưu giữ dữ liệu]
+        UA5 --> RET1[Ghi vào bảng smartlock_access_logs]
+        RET1 --> RET2[Lưu giữ: 90 ngày hot, 2 năm archive]
+        RET2 --> RET3[GDPR: xuất theo yêu cầu, xóa theo retention]
     end
 
     style UA5 fill:#bbf,color:#000
@@ -1807,9 +1807,9 @@ flowchart LR
 
 ---
 
-## 10. Dispute Control System
+## 10. Hệ thống kiểm soát tranh chấp
 
-### 10a. Dispute Service — Database Schema
+### 10a. Dispute Service — Schema Database
 
 ```mermaid
 erDiagram
@@ -1922,15 +1922,15 @@ erDiagram
     }
 ```
 
-### 10b. Dispute State Machine
+### 10b. Máy trạng thái tranh chấp
 
 ```mermaid
 stateDiagram-v2
-    [*] --> CREATED: Guest/Host/SYSTEM files
+    [*] --> CREATED: Guest/Host/SYSTEM nộp
 
-    CREATED --> OPEN: Priority assigned + SLA
-    CREATED --> REJECTED: Invalid dispute
-    CREATED --> MERGED: Duplicate
+    CREATED --> OPEN: Gán Priority + SLA
+    CREATED --> REJECTED: Tranh chấp không hợp lệ
+    CREATED --> MERGED: Trùng lặp
 
     OPEN --> RESPONDENT_NOTIFIED
     OPEN --> AUTO_RESOLVED: Rule matched
@@ -1940,7 +1940,7 @@ stateDiagram-v2
     RESPONDENT_NOTIFIED --> RESPONSE_OVERDUE
     RESPONDENT_NOTIFIED --> WITHDRAWN
 
-    RESPONSE_RECEIVED --> MEDIATING: Admin reviews
+    RESPONSE_RECEIVED --> MEDIATING: Admin xem xét
     RESPONSE_RECEIVED --> AUTO_RESOLVED
     RESPONSE_RECEIVED --> PARTIAL_RESOLUTION
 
@@ -1969,7 +1969,7 @@ stateDiagram-v2
     AUTO_RESOLVED --> CLOSED
 ```
 
-### 10c. HOURLY Dispute Flow — Check-in Failure
+### 10c. Luồng tranh chấp HOURLY — Check-in thất bại
 
 ```mermaid
 sequenceDiagram
@@ -1980,102 +1980,102 @@ sequenceDiagram
     participant SmartlockService
     participant Admin
 
-    Guest->>App: "Can't access room" → File dispute
+    Guest->>App: "Không vào được phòng" → Nộp tranh chấp
     App->>DisputeService: POST /disputes
-    DisputeService->>DisputeService: Assign CRITICAL priority, SLA 15min
+    DisputeService->>DisputeService: Gán CRITICAL priority, SLA 15 phút
 
     DisputeService->>BookingService: GET booking + code status
-    BookingService-->>DisputeService: code generated but failed 3x
+    BookingService-->>DisputeService: code đã tạo nhưng thất bại 3 lần
 
-    alt System fault detected
-        DisputeService->>SmartlockService: Force-generate new code
+    alt Phát hiện lỗi hệ thống
+        DisputeService->>SmartlockService: Force-generate mã mới
         DisputeService->>DisputeService: AUTO_RESOLVED
-        DisputeService->>DisputeService: Issue 100k credit
-        DisputeService->>Guest: New code sent
-    else Host fault
+        DisputeService->>DisputeService: Cấp 100k credit
+        DisputeService->>Guest: Mã mới đã gửi
+    else Lỗi của host
         DisputeService->>DisputeService: ESCALATE CRITICAL
-        Admin->>BookingService: Emergency code
-        DisputeService->>Guest: Emergency code + compensation
-        DisputeService->>DisputeService: MEDIATING (host accountability)
-    else No resolution
+        Admin->>BookingService: Mã khẩn cấp
+        DisputeService->>Guest: Mã khẩn cấp + bồi thường
+        DisputeService->>DisputeService: MEDIATING (trách nhiệm của host)
+    else Không giải quyết được
         DisputeService->>BookingService: BOOKING_CANCELLED + FULL_REFUND
-        DisputeService->>Guest: Full refund issued
-        DisputeService->>DisputeService: Host penalty record
+        DisputeService->>Guest: Đã hoàn tiền đầy đủ
+        DisputeService->>DisputeService: Bản ghi phạt host
     end
 ```
 
-### 10d. Refund Calculation Flow
+### 10d. Luồng tính toán hoàn tiền
 
 ```mermaid
 flowchart TD
-    A[Dispute created] --> B[Fault party determined]
-    B --> C{Host fault?}
-    B --> D{System fault?}
-    B --> E{Guest fault?}
-    B --> F{Mutual fault?}
+    A[Tranh chấp được tạo] --> B[Xác định bên có lỗi]
+    B --> C{Lỗi của host?}
+    B --> D{Lỗi hệ thống?}
+    B --> E{Lỗi của khách?}
+    B --> F{Lỗi chung?}
 
     C --> G[baseRate = 0.8]
     D --> H[baseRate = 1.0]
     E --> I[baseRate = 0.0]
     F --> J[baseRate = 0.5]
 
-    G --> K[Adjust by evidence strength]
-    H --> L[Max refund = 95%]
-    I --> M[Apply cancellation policy]
+    G --> K[Điều chỉnh theo sức mạnh bằng chứng]
+    H --> L[Hoàn tiền tối đa = 95%]
+    I --> M[Áp dụng cancellation policy]
     J --> K
 
     K --> L
     M --> L
 
-    L --> M2{HOURLY model?}
-    L --> N2{DAILY model?}
+    L --> M2{Mô hình HOURLY?}
+    L --> N2{Mô hình DAILY?}
 
-    M2 -->|Yes| N[Subtract hours used<br/>Max deduction = 50%]
-    M2 -->|No| O[Apply cancellation rules]
+    M2 -->|Có| N[Trừ số giờ đã sử dụng<br/>Khấu trừ tối đa = 50%]
+    M2 -->|Không| O[Áp dụng cancellation rules]
 
     N --> P[Refund = original × baseRate - deductions]
     O --> P
     N2 --> O
 
-    P --> Q[Execute refund + compensation]
-    Q --> R[Mark RESOLVED]
-    Q --> S[Notify both parties]
+    P --> Q[Thực hiện refund + compensation]
+    Q --> R[Đánh dấu RESOLVED]
+    Q --> S[Thông báo cả hai bên]
 
     style H fill:#dfd,color:#000
     style L fill:#bbf,color:#000
     style R fill:#dfd,color:#000
 ```
 
-### 10e. Auto-Resolution Decision Matrix
+### 10e. Ma trận quyết định Auto-Resolution
 
 ```mermaid
 flowchart TD
-    A[Dispute created] --> B{Gather evidence}
-    B --> C{Host fault + guest evidence strong?}
-    C -->|Yes + no counter| D[Auto-resolve 70% refund]
+    A[Tranh chấp được tạo] --> B{Thu thập bằng chứng}
+    B --> C{Lỗi host + bằng chứng khách mạnh?}
+    C -->|Có + không phản bác| D[Auto-resolve 70% refund]
 
-    C -->|Has counter-evidence| E[Manual mediation]
-    C -->|No evidence| F[Request evidence from guest]
+    C -->|Có bằng chứng phản bác| E[Hòa giải thủ công]
+    C -->|Không có bằng chứng| F[Yêu cầu bằng chứng từ khách]
 
-    G{Smartlock system error?}
-    G -->|Yes| H[Auto-resolve 100% refund + 100k credit]
-    G -->|No| I{Host no-show + no entry log?}
+    G{Lỗi hệ thống Smartlock?}
+    G -->|Có| H[Auto-resolve 100% refund + 100k credit]
+    G -->|Không| I{Host no-show + không có entry log?}
 
-    I -->|Yes| J[Auto-resolve 100% + free night]
-    I -->|No| K{Payment duplicate?}
+    I -->|Có| J[Auto-resolve 100% + free night]
+    I -->|Không| K{Thanhtoán trùng lặp?}
 
-    K -->|Yes| L[Auto-resolve duplicate amount]
-    K -->|No| M{Price calc error?}
+    K -->|Có| L[Auto-resolve số tiền trùng lặp]
+    K -->|Không| M{Lỗi tính giá?}
 
-    M -->|Yes| N[Auto-resolve: refund difference]
-    M -->|No| E
+    M -->|Có| N[Auto-resolve: hoàn lại chênh lệch]
+    M -->|Không| E
 
-    D --> O[Execute refund + compensation]
+    D --> O[Thực hiện refund + compensation]
     H --> O
     J --> O
     L --> O
     N --> O
-    E --> P[Assign to Admin queue]
+    E --> P[Gán vào hàng đợi Admin]
 
     style H fill:#dfd,color:#000
     style D fill:#bbf,color:#000
@@ -2083,7 +2083,7 @@ flowchart TD
     style E fill:#ffe0b0,color:#000
 ```
 
-### 10f. Dispute Integration — Event Flow
+### 10f. Tích hợp tranh chấp — Luồng sự kiện
 
 ```mermaid
 sequenceDiagram
@@ -2096,56 +2096,56 @@ sequenceDiagram
     participant Admin
 
     Smartlock->>DisputeService: SMARTLOCK_ACCESS_FAILED
-    DisputeService->>DisputeService: Auto-classify: CHECKIN_FAILURE_SYS
-    DisputeService->>DisputeService: Assign CRITICAL + 15min SLA
+    DisputeService->>DisputeService: Tự động phân loại: CHECKIN_FAILURE_SYS
+    DisputeService->>DisputeService: Gán CRITICAL + SLA 15 phút
     DisputeService->>BookingService: GET booking details
     DisputeService->>RoomService: GET smartlock logs
     DisputeService->>Admin: Push notification CRITICAL
 
-    alt System fault confirmed
-        DisputeService->>BookingService: Generate emergency code
+    alt Lỗi hệ thống được xác nhận
+        DisputeService->>BookingService: Tạo mã khẩn cấp
         DisputeService->>DisputeService: AUTO_RESOLVED
-        DisputeService->>DisputeService: Issue COMPENSATION
-        DisputeService->>Guest: New code + credit notification
-        DisputeService->>Admin: Auto-resolution logged
+        DisputeService->>DisputeService: Cấp COMPENSATION
+        DisputeService->>Guest: Mã mới + thông báo credit
+        DisputeService->>Admin: Auto-resolution đã log
     end
 
     PaymentGateway->>DisputeService: PAYMENT_DISPUTE
-    DisputeService->>DisputeService: Auto-classify: PAYMENT_DUPLICATE
+    DisputeService->>DisputeService: Tự động phân loại: PAYMENT_DUPLICATE
     DisputeService->>DisputeService: AUTO_RESOLVED
-    DisputeService->>BookingService: Initiate refund
-    DisputeService->>Guest: Refund issued notification
+    DisputeService->>BookingService: Khởi tạo refund
+    DisputeService->>Guest: Thông báo đã hoàn tiền
 
-    Guest->>DisputeService: PROPERTY_MISMATCH dispute
-    DisputeService->>Admin: MEDIATING queue
-    Admin->>DisputeService: Review + decide
+    Guest->>DisputeService: Tranh chấp PROPERTY_MISMATCH
+    DisputeService->>Admin: Hàng đợi MEDIATING
+    Admin->>DisputeService: Xem xét + quyết định
     DisputeService->>BookingService: PROCESS_REFUND
-    DisputeService->>Guest: Resolution notification
-    DisputeService->>Host: Payout deduction notification
+    DisputeService->>Guest: Thông báo giải quyết
+    DisputeService->>Host: Thông báo khấu trừ payout
 ```
 
-### 10g. DAILY vs HOURLY — Dispute Comparison
+### 10g. DAILY vs HOURLY — So sánh tranh chấp
 
 ```mermaid
 flowchart LR
-    subgraph DAILY["DAILY Model"]
-        D1[CRITICAL: 30min response<br/>Full resolution: 4h]
-        D2[Refund: per night<br/>Evidence: photos/video]
+    subgraph DAILY["Mô hình DAILY"]
+        D1[CRITICAL: phản hồi 30 phút<br/>Giải quyết đầy đủ: 4h]
+        D2[Refund: theo đêm<br/>Bằng chứng: ảnh/video]
         D3[Auto-resolve: ~40%]
         D4[Compensation: Free night]
     end
 
-    subgraph HOURLY["HOURLY Model"]
-        H1[CRITICAL: 15min response<br/>Full resolution: 2h]
-        H2[Refund: per hour used<br/>Evidence: smartlock logs]
+    subgraph HOURLY["Mô hình HOURLY"]
+        H1[CRITICAL: phản hồi 15 phút<br/>Giải quyết đầy đủ: 2h]
+        H2[Refund: theo giờ đã sử dụng<br/>Bằng chứng: smartlock logs]
         H3[Auto-resolve: ~55%]
         H4[Compensation: Free hours]
     end
 
     D1 -->|"SLA"| H1
-    D2 -->|"Refund calc"| H2
+    D2 -->|"Tính refund"| H2
     D3 -->|"Auto-rate"| H3
-    D4 -->|"Comp type"| H4
+    D4 -->|"Loại comp"| H4
 
     style H1 fill:#dfd,color:#000
     style H2 fill:#dfd,color:#000
@@ -2155,4 +2155,4 @@ flowchart LR
 
 ---
 
-*Generated: 2026-05-21 — Homi 1.0 Room Service Database Design*
+*Ngày tạo: 2026-05-21 — Thiết kế Database Room Service Homi 1.0*

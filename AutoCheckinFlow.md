@@ -1,23 +1,23 @@
-# Auto Check-in Flow for Homestays with Smart Locks
+# Luồng Tự Động Check-in cho Homestay có Smart Lock
 
-## 1. Overview
+## 1. Tổng quan
 
-**Objective:** Increase renter flexibility and owner convenience by eliminating physical key handovers through automated, secure, time-bound access code delivery.
+**Mục tiêu:** Tăng tính linh hoạt cho người thuê và sự tiện lợi cho chủ nhà bằng cách loại bỏ việc giao nhận chìa khóa vật lý thông qua việc cung cấp mã truy cập tự động, an toàn và có giới hạn thời gian.
 
-**Scope:** End-to-end flow from booking confirmation through check-out, covering code generation, encryption, delivery, access, revocation, and audit — all without disclosing lock device information to guests.
+**Phạm vi:** Luồng end-to-end từ xác nhận đặt phòng đến check-out, bao gồm tạo mã, mã hóa, giao mã, truy cập, thu hồi và kiểm tra — tất cả đều không tiết lộ thông tin thiết bị khóa cho khách.
 
-**Design principles:**
-- `code_plaintext` is never stored in any database
-- Decryption key never leaves the guest's device
-- Access codes are time-bound and automatically expire
-- Lock device IDs are never exposed in client-facing APIs
-- All access events are logged for dispute resolution
+**Nguyên tắc thiết kế:**
+- `code_plaintext` không bao giờ được lưu trong bất kỳ database nào
+- Khóa giải mã không bao giờ rời khỏi thiết bị của khách
+- Mã truy cập có giới hạn thời gian và tự động hết hạn
+- ID thiết bị khóa không bao giờ được hiển thị trong API phía client
+- Tất cả sự kiện truy cập đều được ghi log để giải quyết tranh chấp
 
 ---
 
-## 2. End-to-End Flow
+## 2. Luồng End-to-End
 
-### 2.1 Flow Diagram
+### 2.1 Sơ đồ luồng
 
 ```mermaid
 sequenceDiagram
@@ -30,7 +30,7 @@ sequenceDiagram
     participant RoomService
     participant MessageBroker
 
-    Note over BookingService: Booking CONFIRMED (payment success)
+    Note over BookingService: Booking CONFIRMED (thanh toán thành công)
 
     BookingService->>SmartlockProvider: POST /devices/:device_id/codes/generate
     SmartlockProvider-->>BookingService: { code: "1234#5678", expires_at: "..." }
@@ -40,7 +40,7 @@ sequenceDiagram
     BookingService->>MessageBroker: Publish CODE_GENERATED
 
     MessageBroker->>RoomService: Deliver CODE_GENERATED
-    RoomService->>RoomService: Log event (no sensitive data)
+    RoomService->>RoomService: Log event (không có dữ liệu nhạy cảm)
 
     BookingService->>App: Push notification: "Your room is ready"
     App->>BookingService: GET /bookings/:id/access-code
@@ -65,53 +65,53 @@ sequenceDiagram
     end
 ```
 
-### 2.2 Stage-by-Stage Breakdown
+### 2.2 Phân tích theo từng giai đoạn
 
-#### Stage 1: Code Generation (on BOOKING_CONFIRMED)
+#### Giai đoạn 1: Tạo mã (khi BOOKING_CONFIRMED)
 
-**Trigger:** `BOOKING_CONFIRMED` event arrives from payment webhook.
+**Trigger:** Sự kiện `BOOKING_CONFIRMED` đến từ payment webhook.
 
-**Flow:**
-1. Booking Service calls Smartlock Provider API: `POST /devices/{device_id}/codes/generate`
+**Luồng:**
+1. Booking Service gọi Smartlock Provider API: `POST /devices/{device_id}/codes/generate`
    - Payload: `{ booking_id, guest_id, valid_from, valid_until, device_id }`
-   - Provider returns a time-limited access code (e.g., `"1847#5923"`)
-2. Booking Service derives a per-booking encryption key:
+   - Provider trả về mã truy cập có giới hạn thời gian (ví dụ: `"1847#5923"`)
+2. Booking Service tạo khóa mã hóa cho từng booking:
    ```
    derived_key = HMAC-SHA256(booking_id, MASTER_ENCRYPTION_KEY)
    ```
-   - `MASTER_ENCRYPTION_KEY` is stored in HashiCorp Vault / AWS KMS
-   - Each booking gets a unique derived key — compromise of one key does not expose others
-3. Booking Service encrypts the code with **AES-256-GCM**:
-   - `iv` = 12 random bytes
-   - `tag` = authentication tag (16 bytes)
+   - `MASTER_ENCRYPTION_KEY` được lưu trong HashiCorp Vault / AWS KMS
+   - Mỗi booking có một derived key duy nhất — việc lộ một khóa không ảnh hưởng đến các khóa khác
+3. Booking Service mã hóa mã bằng **AES-256-GCM**:
+   - `iv` = 12 byte ngẫu nhiên
+   - `tag` = authentication tag (16 byte)
    - `code_encrypted` = AES-256-GCM(derived_key, iv, code_plaintext)
-4. Booking Service stores in `smartlock_codes`:
+4. Booking Service lưu trong `smartlock_codes`:
    - `code_encrypted` (ciphertext)
-   - `iv` and `tag` (needed for decryption)
-   - `key_hash` = SHA-256(derived_key) — for key rotation lookups, NOT decryption
-   - `valid_from` = check-in time
-   - `valid_until` = checkout time + buffer_minutes
+   - `iv` và `tag` (cần thiết cho việc giải mã)
+   - `key_hash` = SHA-256(derived_key) — để tra cứu key rotation, KHÔNG dùng để giải mã
+   - `valid_from` = thời gian check-in
+   - `valid_until` = thời gian checkout + buffer_minutes
    - `is_active` = true
-5. Booking Service publishes `CODE_GENERATED` event to broker
+5. Booking Service publish sự kiện `CODE_GENERATED` đến broker
 
-**What is NOT stored:**
-- `code_plaintext` — never leaves the Smartlock Provider's response, exists only in memory during encryption
-- `derived_key` — derived at runtime, never persisted
-- `MASTER_ENCRYPTION_KEY` — stored only in KMS/Vault
+**Những gì KHÔNG được lưu:**
+- `code_plaintext` — không bao giờ rời khỏi response của Smartlock Provider, chỉ tồn tại trong bộ nhớ khi mã hóa
+- `derived_key` — được tạo tại runtime, không bao giờ được lưu trữ
+- `MASTER_ENCRYPTION_KEY` — chỉ được lưu trong KMS/Vault
 
-#### Stage 2: Code Delivery
+#### Giai đoạn 2: Giao mã
 
-**Trigger:** Guest opens the app after booking is confirmed.
+**Trigger:** Khách mở app sau khi booking được xác nhận.
 
-**Flow:**
-1. App polls or receives push notification: "Your room is ready — Tap to get access code"
-2. App calls: `GET /bookings/:id/access-code`
-3. Booking Service validates:
-   - Booking is CONFIRMED
+**Luồng:**
+1. App poll hoặc nhận push notification: "Phòng của bạn đã sẵn sàng — Nhấn để nhận mã truy cập"
+2. App gọi: `GET /bookings/:id/access-code`
+3. Booking Service kiểm tra:
+   - Booking đang CONFIRMED
    - `valid_from <= now <= valid_until`
    - `is_active = true`
-   - Caller's `guest_id` matches booking's `guest_id`
-4. Booking Service returns:
+   - `guest_id` của người gọi khớp với `guest_id` của booking
+4. Booking Service trả về:
    ```json
    {
      "code_encrypted": "a3f8b2c1...",
@@ -124,84 +124,84 @@ sequenceDiagram
      "room_number": "101"
    }
    ```
-5. App derives the key locally: `derived_key = HMAC-SHA256(booking_id, MASTER_ENCRYPTION_KEY)`
-   - `MASTER_ENCRYPTION_KEY` is provisioned to the app via a secure channel at install/login
-   - Key derivation happens entirely on-device
-6. App decrypts: `code_plaintext = AES-256-GCM-Decrypt(derived_key, iv, tag, code_encrypted)`
-7. App displays: access code + BLE auto-unlock button + QR code
+5. App tạo khóa cục bộ: `derived_key = HMAC-SHA256(booking_id, MASTER_ENCRYPTION_KEY)`
+   - `MASTER_ENCRYPTION_KEY` được cung cấp cho app qua kênh bảo mật khi cài đặt/đăng nhập
+   - Việc tạo khóa diễn ra hoàn toàn trên thiết bị
+6. App giải mã: `code_plaintext = AES-256-GCM-Decrypt(derived_key, iv, tag, code_encrypted)`
+7. App hiển thị: mã truy cập + nút BLE auto-unlock + QR code
 
-#### Stage 3: Guest Access
+#### Giai đoạn 3: Khách truy cập
 
-**Entry methods (in priority order):**
+**Các phương thức vào phòng (theo thứ tự ưu tiên):**
 
-| Priority | Method | How it works |
-|----------|--------|-------------|
-| 1 | BLE proximity unlock | App sends BLE signal when guest is within ~5m of smartlock. Device auto-unlocks. |
-| 2 | Manual PIN entry | Guest taps keypad on smartlock device. |
-| 3 | QR code | Guest scans QR code displayed on app screen. |
-| 4 | NFC tap | Guest taps phone on smartlock NFC tag. |
-| 5 | Host fallback | App shows host contact if all above fail. |
+| Ưu tiên | Phương thức | Cách hoạt động |
+|----------|---------|-------------|
+| 1 | Mở khóa qua BLE proximity | App gửi tín hiệu BLE khi khách ở trong phạm vi ~5m của smartlock. Thiết bị tự động mở khóa. |
+| 2 | Nhập PIN thủ công | Khách nhấn bàn phím trên thiết bị smartlock. |
+| 3 | QR code | Khách quét QR code hiển thị trên màn hình app. |
+| 4 | NFC tap | Khách chạm điện thoại vào thẻ NFC của smartlock. |
+| 5 | Dự phòng qua Host | App hiển thị liên hệ Host nếu tất cả phương thức trên thất bại. |
 
-**Each unlock attempt is logged:**
+**Mỗi lần thử mở khóa đều được ghi log:**
 - `booking_id`, `device_id`, `guest_id`
 - `unlock_method` (BLE / PIN / QR / NFC)
 - `timestamp`
 - `result` (SUCCESS / FAIL)
-- `failure_reason` (if applicable)
+- `failure_reason` (nếu có)
 
-#### Stage 4: Checkout and Revocation
+#### Giai đoạn 4: Check-out và thu hồi mã
 
-**Trigger:** Guest taps "Check-out" in app, OR `valid_until` is reached.
+**Trigger:** Khách nhấn "Check-out" trong app, HOẶC đạt đến `valid_until`.
 
-**Automatic revocation (time-based):**
-- Cron job runs every 5 minutes scanning `smartlock_codes` where `valid_until < now()` and `is_active = true`
-- For each expired code:
-  1. Call Smartlock Provider: `POST /devices/{device_id}/codes/revoke`
-  2. Update DB: `is_active = false`
-  3. Publish `CODE_EXPIRED` event
+**Thu hồi tự động (theo thời gian):**
+- Cron job chạy mỗi 5 phút quét `smartlock_codes` có `valid_until < now()` và `is_active = true`
+- Với mỗi mã hết hạn:
+  1. Gọi Smartlock Provider: `POST /devices/{device_id}/codes/revoke`
+  2. Cập nhật DB: `is_active = false`
+  3. Publish sự kiện `CODE_EXPIRED`
 
-**Manual revocation (guest-initiated):**
-1. Guest taps "Check-out" in app
-2. Booking Service calls Smartlock Provider: `POST /devices/:device_id/codes/revoke`
-3. Booking Service updates DB: `is_active = false`
-4. Booking Service publishes `CHECKOUT_COMPLETED`
-5. Room Service receives event and transitions slot to CLEANING
+**Thu hồi thủ công (do khách khởi tạo):**
+1. Khách nhấn "Check-out" trong app
+2. Booking Service gọi Smartlock Provider: `POST /devices/:device_id/codes/revoke`
+3. Booking Service cập nhật DB: `is_active = false`
+4. Booking Service publish `CHECKOUT_COMPLETED`
+5. Room Service nhận sự kiện và chuyển slot sang CLEANING
 
 ---
 
-## 3. Database Schema — Booking Service
+## 3. Schema Database — Booking Service
 
-### 3.1 `smartlock_codes` Table
+### 3.1 Bảng `smartlock_codes`
 
 | Column | Type | Constraint | Description |
 |--------|------|-----------|-------------|
 | **id** | UUID | PK | |
-| **booking_id** | UUID | FK, UNIQUE | One code per booking |
-| **device_id** | VARCHAR(100) | NOT NULL | Smartlock device ID (opaque, from Room Service) |
+| **booking_id** | UUID | FK, UNIQUE | Một mã cho mỗi booking |
+| **device_id** | VARCHAR(100) | NOT NULL | ID thiết bị Smartlock (opaque, từ Room Service) |
 | **code_encrypted** | TEXT | NOT NULL | AES-256-GCM ciphertext |
-| **iv** | VARCHAR(24) | NOT NULL | 12-byte IV, hex-encoded |
-| **tag** | VARCHAR(32) | NOT NULL | GCM auth tag, hex-encoded |
-| **key_hash** | VARCHAR(64) | NOT NULL | SHA-256(derived_key) for rotation lookup |
-| **code_expires_at** | TIMESTAMPTZ | NOT NULL | Hard expiry: checkout_time + buffer_minutes |
-| **valid_from** | TIMESTAMPTZ | NOT NULL | Earliest time code can be used |
-| **valid_until** | TIMESTAMPTZ | NOT NULL | Latest time code can be used |
-| **is_active** | BOOLEAN | NOT NULL, DEFAULT true | False after revocation or expiry |
-| **checked_in_at** | TIMESTAMPTZ | NULLABLE | First successful unlock |
-| **checked_out_at** | TIMESTAMPTZ | NULLABLE | Check-out timestamp |
-| **revoked_at** | TIMESTAMPTZ | NULLABLE | When code was manually revoked |
-| **revoked_by** | UUID | NULLABLE | User or system that revoked |
+| **iv** | VARCHAR(24) | NOT NULL | IV 12 byte, mã hóa hex |
+| **tag** | VARCHAR(32) | NOT NULL | GCM auth tag, mã hóa hex |
+| **key_hash** | VARCHAR(64) | NOT NULL | SHA-256(derived_key) để tra cứu rotation |
+| **code_expires_at** | TIMESTAMPTZ | NOT NULL | Hết hạn cứng: checkout_time + buffer_minutes |
+| **valid_from** | TIMESTAMPTZ | NOT NULL | Thời gian sớm nhất mã có thể được sử dụng |
+| **valid_until** | TIMESTAMPTZ | NOT NULL | Thời gian muộn nhất mã có thể được sử dụng |
+| **is_active** | BOOLEAN | NOT NULL, DEFAULT true | False sau khi thu hồi hoặc hết hạn |
+| **checked_in_at** | TIMESTAMPTZ | NULLABLE | Lần mở khóa thành công đầu tiên |
+| **checked_out_at** | TIMESTAMPTZ | NULLABLE | Thời gian check-out |
+| **revoked_at** | TIMESTAMPTZ | NULLABLE | Khi mã bị thu hồi thủ công |
+| **revoked_by** | UUID | NULLABLE | User hoặc hệ thống đã thu hồi |
 | **created_at** | TIMESTAMPTZ | DEFAULT now() | |
 
 **Indexes:**
 - `idx_smartlock_codes_booking_id` ON (booking_id)
 - `idx_smartlock_codes_device_expiry` ON (device_id, code_expires_at) WHERE is_active = true
 
-### 3.2 `smartlock_access_logs` Table
+### 3.2 Bảng `smartlock_access_logs`
 
 | Column | Type | Constraint | Description |
 |--------|------|-----------|-------------|
 | **id** | UUID | PK | |
-| **booking_id** | UUID | FK, NULLABLE | May be null if booking not yet confirmed |
+| **booking_id** | UUID | FK, NULLABLE | Có thể null nếu booking chưa được xác nhận |
 | **device_id** | VARCHAR(100) | NOT NULL | |
 | **guest_id** | UUID | NOT NULL | |
 | **event_type** | ENUM | NOT NULL | UNLOCK, LOCK, FAILED_ATTEMPT, MANUAL_OVERRIDE |
@@ -216,27 +216,27 @@ sequenceDiagram
 - `idx_access_logs_booking` ON (booking_id, occurred_at DESC)
 - `idx_access_logs_alert` ON (device_id, result, occurred_at DESC) WHERE result = 'FAIL'
 
-### 3.3 `smartlock_providers` Table (Multi-Provider Support)
+### 3.3 Bảng `smartlock_providers` (Hỗ trợ đa Provider)
 
 | Column | Type | Constraint | Description |
 |--------|------|-----------|-------------|
 | **id** | UUID | PK | |
 | **name** | VARCHAR(50) | NOT NULL | August, Yale, Nuki, TTLock, SALTO... |
 | **api_base_url** | VARCHAR(255) | NOT NULL | |
-| **api_key_encrypted** | TEXT | NOT NULL | Encrypted API key |
+| **api_key_encrypted** | TEXT | NOT NULL | API key đã được mã hóa |
 | **is_active** | BOOLEAN | DEFAULT true | |
 | **supports_ble** | BOOLEAN | DEFAULT false | |
 | **supports_qr** | BOOLEAN | DEFAULT false | |
 | **supports_nfc** | BOOLEAN | DEFAULT false | |
-| **max_code_ttl_minutes** | SMALLINT | NOT NULL | Provider's max validity |
+| **max_code_ttl_minutes** | SMALLINT | NOT NULL | Thời gian hiệu lực tối đa của provider |
 | **created_at** | TIMESTAMPTZ | DEFAULT now() | |
 
-### 3.4 `smartlock_devices` Table (Local Registry)
+### 3.4 Bảng `smartlock_devices` (Sổ đăng ký cục bộ)
 
 | Column | Type | Constraint | Description |
 |--------|------|-----------|-------------|
-| **id** | UUID | PK | Internal ID |
-| **provider_device_id** | VARCHAR(100) | NOT NULL | ID as known by provider |
+| **id** | UUID | PK | ID nội bộ |
+| **provider_device_id** | VARCHAR(100) | NOT NULL | ID theo cách provider biết |
 | **provider_id** | UUID | FK → smartlock_providers | |
 | **property_id** | UUID | NOT NULL | FK → properties |
 | **room_id** | UUID | FK → rooms | |
@@ -247,30 +247,30 @@ sequenceDiagram
 
 ---
 
-## 4. Security Architecture
+## 4. Kiến trúc bảo mật
 
-### 4.1 Encryption Key Hierarchy
+### 4.1 Phân cấp khóa mã hóa
 
 ```mermaid
 flowchart TD
-    K1[MASTER_ENCRYPTION_KEY<br/>Stored in AWS KMS / HashiCorp Vault] --> K2[Booking-level derived key<br/>HMAC-SHA256(booking_id, MASTER)]
+    K1[MASTER_ENCRYPTION_KEY<br/>Lưu trong AWS KMS / HashiCorp Vault] --> K2[Booking-level derived key<br/>HMAC-SHA256(booking_id, MASTER)]
     K2 --> K3[Code-specific session key<br/>AES-256-GCM per-access]
 
     subgraph BookingServiceDB[Booking Service DB]
-        E1[code_encrypted — stored]
-        E2[iv — stored]
-        E3[tag — stored]
-        E4[key_hash — stored]
+        E1[code_encrypted — đã lưu]
+        E2[iv — đã lưu]
+        E3[tag — đã lưu]
+        E4[key_hash — đã lưu]
     end
 
     subgraph SmartlockProvider[Smartlock Provider]
         P1[device_id — opaque]
-        P2[plaintext code — transient<br/>only in memory during generation]
+        P2[plaintext code — tạm thời<br/>chỉ trong bộ nhớ khi tạo]
     end
 
     subgraph GuestApp[Guest App]
-        A1[booking_id — known]
-        A2[MASTER key provisioned<br/>via secure channel at login]
+        A1[booking_id — đã biết]
+        A2[MASTER key được cung cấp<br/>qua kênh bảo mật khi đăng nhập]
     end
 
     E1 & E2 & E3 & E4 --> K2
@@ -282,17 +282,17 @@ flowchart TD
     style P2 fill:#ffe0b0,color:#000
 ```
 
-### 4.2 No Lock Disclosure Rule
+### 4.2 Quy tắc không tiết lộ khóa
 
 ```mermaid
 flowchart LR
     subgraph ClientAPI["Client-facing API (Booking Service)"]
-        API1[GET /bookings/:id/access-code<br/>Returns: code_encrypted, iv, tag, valid_from, valid_until]
-        API2[GET /rooms/:id<br/>Returns: room_number, property_address, check-in instructions]
+        API1[GET /bookings/:id/access-code<br/>Trả về: code_encrypted, iv, tag, valid_from, valid_until]
+        API2[GET /rooms/:id<br/>Trả về: room_number, property_address, check-in instructions]
     end
 
     subgraph InternalAPI["Internal API (Room Service)"]
-        API3[GET /rooms/:id/smartlock<br/>Returns: device_id, provider, encryption_config<br/>Requires: service-to-service auth]
+        API3[GET /rooms/:id/smartlock<br/>Trả về: device_id, provider, encryption_config<br/>Yêu cầu: service-to-service auth]
     end
 
     API3 --> API2
@@ -301,33 +301,33 @@ flowchart LR
     style API1 fill:#dfd,color:#000
     style API3 fill:#ffe0b0,color:#000
 
-    Note: Guest app NEVER receives device_id, provider name, MAC address,<br/>BLE UUID, or any hardware-level lock identifiers
+    Note: Guest app KHÔNG BAO GIỜ nhận device_id, tên provider, địa chỉ MAC,<br/>BLE UUID, hoặc bất kỳ identifier phần cứng nào của khóa
 ```
 
-**Rules enforced:**
-1. `smartlock_codes` API responses must NEVER include `device_id` or `provider_id`
-2. Guest-facing endpoints (`/bookings/:id/access-code`) return only access payload
-3. `smartlock_devices.provider_device_id` is stored encrypted at rest
-4. BLE UUIDs / MAC addresses are considered PII — logged separately with access log retention policy
+**Các quy tắc được áp dụng:**
+1. Response API của `smartlock_codes` KHÔNG BAO GIỜ bao gồm `device_id` hoặc `provider_id`
+2. Endpoint phía khách (`/bookings/:id/access-code`) chỉ trả về payload truy cập
+3. `smartlock_devices.provider_device_id` được lưu mã hóa khi lưu trữ
+4. BLE UUID / địa chỉ MAC được coi là PII — được log riêng với chính sách lưu giữ log truy cập
 
-### 4.3 Time-Bound Code Enforcement
+### 4.3 Thực thi mã có giới hạn thời gian
 
 ```mermaid
 flowchart TD
-    A[Guest arrives at property] --> B{now within [valid_from, valid_until]?}
-    B -->|No before valid_from| C[Display: "Check-in opens at HH:MM"]
-    B -->|Yes within window| D[Allow decryption + display]
-    B -->|No after valid_until| E[Display: "Code expired — Contact host"]
-    E --> E2[Auto-revoke via cron: is_active = false]
-    E2 --> E3[Call Smartlock Provider revoke API]
+    A[Khách đến property] --> B{now nằm trong [valid_from, valid_until]?}
+    B -->|Không, trước valid_from| C[Hiển thị: "Check-in mở lúc HH:MM"]
+    B -->|Có, trong khoảng thời gian| D[Cho phép giải mã + hiển thị]
+    B -->|Không, sau valid_until| E[Hiển thị: "Mã đã hết hạn — Liên hệ host"]
+    E --> E2[Auto-revoke qua cron: is_active = false]
+    E2 --> E3[Gọi Smartlock Provider revoke API]
 
     D --> F{is_active = true?}
-    F -->|Yes| G[Allow access]
-    F -->|No| H[Display: "Access revoked — Contact host"]
+    F -->|Có| G[Cho phép truy cập]
+    F -->|Không| H[Hiển thị: "Quyền truy cập đã bị thu hồi — Liên hệ host"]
 
-    G --> I[Smartlock logs UNLOCK event]
-    H --> J[Smartlock logs FAIL event]
-    I --> K[Audit trail complete]
+    G --> I[Smartlock log sự kiện UNLOCK]
+    H --> J[Smartlock log sự kiện FAIL]
+    I --> K[Audit trail hoàn tất]
 
     style C fill:#ffe0b0,color:#000
     style E fill:#fbb,color:#000
@@ -337,9 +337,9 @@ flowchart TD
 
 ---
 
-## 5. Smartlock Provider Integration — Adapter Pattern
+## 5. Tích hợp Smartlock Provider — Adapter Pattern
 
-### 5.1 Adapter Interface
+### 5.1 Giao diện Adapter
 
 ```typescript
 interface SmartlockProviderAdapter {
@@ -362,32 +362,32 @@ interface SmartlockProviderAdapter {
 }
 ```
 
-### 5.2 Supported Providers
+### 5.2 Các Provider được hỗ trợ
 
-| Provider | BLE | QR | NFC | Max TTL | Notes |
+| Provider | BLE | QR | NFC | Max TTL | Ghi chú |
 |----------|-----|----|----|---------|-------|
-| **TTLock** | Yes | Yes | No | 24h | Most popular in Vietnam, good API |
-| **SALTO KS** | Yes | Yes | Yes | Configurable | Enterprise-grade, global |
-| **Nuki** | Yes | No | No | 24h | European market |
-| **August** | Yes | No | No | User-defined | US market |
-| **Yale Access** | Yes | Yes | Yes | User-defined | Global |
-| **igloohome** | Yes | Yes | No | 24h | Asia-Pacific focus |
-| **Dormakaba** | Yes | Yes | Yes | Configurable | Hotel chains |
+| **TTLock** | Có | Có | Không | 24h | Phổ biến nhất tại Việt Nam, API tốt |
+| **SALTO KS** | Có | Có | Có | Configurable | Cấp doanh nghiệp, toàn cầu |
+| **Nuki** | Có | Không | Không | 24h | Thị trường châu Âu |
+| **August** | Có | Không | Không | User-defined | Thị trường Mỹ |
+| **Yale Access** | Có | Có | Có | User-defined | Toàn cầu |
+| **igloohome** | Có | Có | Không | 24h | Tập trung châu Á - Thái Bình Dương |
+| **Dormakaba** | Có | Có | Có | Configurable | Chuỗi khách sạn |
 
-### 5.3 Fallback Chain
+### 5.3 Chuỗi dự phòng
 
 ```mermaid
 flowchart TD
-    A[Guest arrives] --> B{Try BLE proximity}
-    B -->|Success| Z[Unlock]
-    B -->|Fail / Unavailable| C{Try QR code}
-    C -->|Success| Z
-    C -->|Fail / Not supported| D{Try NFC tap}
-    D -->|Success| Z
-    D -->|Fail / Not supported| E{Try manual PIN}
-    E -->|3 wrong attempts| F[Lock out 30s]
-    E -->|Success| Z
-    E -->|Code expired or revoked| G[Show host contact]
+    A[Khách đến] --> B{Thử BLE proximity}
+    B -->|Thành công| Z[Mở khóa]
+    B -->|Thất bại / Không khả dụng| C{Thử QR code}
+    C -->|Thành công| Z
+    C -->|Thất bại / Không hỗ trợ| D{Thử NFC tap}
+    D -->|Thành công| Z
+    D -->|Thất bại / Không hỗ trợ| E{Thử PIN thủ công}
+    E -->|3 lần sai| F[Khóa 30s]
+    E -->|Thành công| Z
+    E -->|Mã hết hạn hoặc bị thu hồi| G[Hiển thị liên hệ host]
     F --> G
 
     style Z fill:#dfd,color:#000
@@ -397,82 +397,82 @@ flowchart TD
 
 ---
 
-## 6. Offline Mode
+## 6. Chế độ Offline
 
-Guests may arrive in areas with no network connectivity. The system must support offline access.
+Khách có thể đến những khu vực không có kết nối mạng. Hệ thống phải hỗ trợ truy cập offline.
 
-### 6.1 Pre-Download Strategy
+### 6.1 Chiến lược tải trước
 
 ```mermaid
 flowchart TD
-    A[Booking CONFIRMED] --> B[App pre-downloads access payload]
-    B --> C[code_encrypted + iv + tag encrypted again<br/>with device-bound key]
-    C --> D[Stored in app secure enclave<br/>(iOS Keychain / Android Keystore)]
+    A[Booking CONFIRMED] --> B[App tải trước access payload]
+    B --> C[code_encrypted + iv + tag được mã hóa lại<br/>với device-bound key]
+    C --> D[Lưu trong secure enclave của app<br/>(iOS Keychain / Android Keystore)]
     D --> E[TTL = valid_until timestamp]
-    E --> F[App shows: "Downloaded for offline use"]
+    E --> F[App hiển thị: "Đã tải xuống để dùng offline"]
 
-    G[Guest arrives offline] --> H{Device time within [valid_from, valid_until]?}
-    H -->|Yes| I[Decrypt using locally-stored key material]
-    H -->|No| J[Display expiry message]
-    I --> K[Display code / BLE unlock]
+    G[Khách đến offline] --> H{Thời gian thiết bị nằm trong [valid_from, valid_until]?}
+    H -->|Có| I[Giải mã bằng key material lưu cục bộ]
+    H -->|Không| J[Hiển thị thông báo hết hạn]
+    I --> K[Hiển thị mã / BLE unlock]
 ```
 
-### 6.2 Offline BLE Unlock
+### 6.2 Mở khóa BLE Offline
 
-For automated properties (`is_automated = true`), BLE unlock uses the device's BLE capability — not the cloud. The app sends the unlock command directly to the smartlock device via BLE, which validates the access code locally against its own stored whitelist.
+Với các property tự động (`is_automated = true`), mở khóa BLE sử dụng khả năng BLE của thiết bị — không qua cloud. App gửi lệnh mở khóa trực tiếp đến thiết bị smartlock qua BLE, thiết bị này xác thực mã truy cập cục bộ với whitelist được lưu trữ.
 
 ```
 App → BLE → Smartlock Device
-              → Validates code against device whitelist
+              → Xác thực mã với whitelist của thiết bị
               → UNLOCK
-              → Logs event locally for sync when online
+              → Log sự kiện cục bộ để sync khi online
 ```
 
 ---
 
-## 7. Access Code State Machine
+## 7. Máy trạng thái mã truy cập
 
 ```mermaid
 stateDiagram-v2
     [*] --> GENERATED: Booking CONFIRMED
 
-    GENERATED --> ACTIVE: valid_from reached
-    GENERATED --> EXPIRED_UNCLAIMED: valid_until passed without activation
-    GENERATED --> CANCELLED: Booking CANCELLED before check-in
+    GENERATED --> ACTIVE: đã đến valid_from
+    GENERATED --> EXPIRED_UNCLAIMED: đã qua valid_until mà chưa kích hoạt
+    GENERATED --> CANCELLED: Booking CANCELLED trước check-in
 
-    ACTIVE --> ACTIVE: Guest re-enters (unlimited)
-    ACTIVE --> USED: First successful unlock (first unlock sets checked_in_at)
-    ACTIVE --> REVOKED: Host or system revokes early
-    ACTIVE --> EXPIRED: valid_until passed
+    ACTIVE --> ACTIVE: Khách vào lại (không giới hạn)
+    ACTIVE --> USED: Mở khóa thành công lần đầu (lần đầu set checked_in_at)
+    ACTIVE --> REVOKED: Host hoặc hệ thống thu hồi sớm
+    ACTIVE --> EXPIRED: đã qua valid_until
 
-    USED --> ACTIVE: Guest leaves and re-enters
-    USED --> REVOKED: Host revokes during stay
-    USED --> EXPIRED: valid_until passed
+    USED --> ACTIVE: Khách rời đi và vào lại
+    USED --> REVOKED: Host thu hồi trong thời gian ở
+    USED --> EXPIRED: đã qua valid_until
 
-    REVOKED --> [*]: Purged after 30-day retention
+    REVOKED --> [*]: Xóa sau 30 ngày lưu giữ
 
-    EXPIRED --> [*]: Auto-cleanup by cron
+    EXPIRED --> [*]: Tự động dọn dẹp bởi cron
 
-    CANCELLED --> [*]: Purged after 7 days
+    CANCELLED --> [*]: Xóa sau 7 ngày
 ```
 
 ---
 
 ## 8. Cron Jobs
 
-| Cron | Frequency | Action |
+| Cron | Tần suất | Hành động |
 |------|----------|--------|
-| Expire codes | Every 5 min | `is_active = false` where `valid_until < now()` |
-| Revoke at checkout | On trigger | Call provider revoke API + DB update |
-| Sync access logs | Every 15 min | Pull from providers that don't push webhooks |
-| Audit log rotation | Daily | Move logs > 90 days to archive table |
-| Cleanup expired codes | Every hour | Purge `is_active = false` records older than 30 days |
+| Hết hạn mã | Mỗi 5 phút | `is_active = false` khi `valid_until < now()` |
+| Thu hồi khi checkout | Khi trigger | Gọi provider revoke API + cập nhật DB |
+| Đồng bộ access logs | Mỗi 15 phút | Pull từ các provider không push webhooks |
+| Xoay vòng audit log | Hàng ngày | Chuyển log > 90 ngày sang bảng archive |
+| Dọn dẹp mã hết hạn | Mỗi giờ | Xóa các bản ghi `is_active = false` cũ hơn 30 ngày |
 
 ---
 
 ## 9. Audit Trail
 
-Every access event is recorded with full context for dispute resolution:
+Mỗi sự kiện truy cập đều được ghi lại với đầy đủ ngữ cảnh để giải quyết tranh chấp:
 
 ```json
 {
@@ -493,16 +493,16 @@ Every access event is recorded with full context for dispute resolution:
 }
 ```
 
-**Retention policy:**
-- Hot storage (PostgreSQL): 90 days
-- Archive storage: 2 years (GDPR: exportable on request, auto-purged after 2 years)
-- Access logs are immutable — no UPDATE or DELETE allowed (enforced via PostgreSQL rule)
+**Chính sách lưu giữ:**
+- Hot storage (PostgreSQL): 90 ngày
+- Archive storage: 2 năm (GDPR: có thể xuất theo yêu cầu, tự động xóa sau 2 năm)
+- Access log là bất biến — không cho phép UPDATE hoặc DELETE (được thực thi qua PostgreSQL rule)
 
 ---
 
-## 10. Integration with Existing System
+## 10. Tích hợp với hệ thống hiện tại
 
-### 10.1 Event Contract
+### 10.1 Hợp đồng sự kiện
 
 | Event | Emitter | Consumers | Payload |
 |-------|---------|-----------|---------|
@@ -516,70 +516,70 @@ Every access event is recorded with full context for dispute resolution:
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| GET | `/bookings/:id/access-code` | guest JWT | Get encrypted code for this booking |
-| POST | `/bookings/:id/checkout` | guest JWT | Trigger checkout + code revocation |
-| GET | `/bookings/:id/access-logs` | guest JWT | Guest's own access history |
-| POST | `/access-log/webhook` | provider HMAC | Provider pushes unlock events |
-| GET | `/admin/access-logs` | host/admin JWT | Full access log for a room |
-| POST | `/admin/smartlock/codes/revoke` | host JWT | Host manually revokes a code |
-| GET | `/internal/devices/:id/status` | service auth | Room Service checks device health |
+| GET | `/bookings/:id/access-code` | guest JWT | Lấy mã đã mã hóa cho booking này |
+| POST | `/bookings/:id/checkout` | guest JWT | Trigger checkout + thu hồi mã |
+| GET | `/bookings/:id/access-logs` | guest JWT | Lịch sử truy cập của chính khách |
+| POST | `/access-log/webhook` | provider HMAC | Provider push sự kiện mở khóa |
+| GET | `/admin/access-logs` | host/admin JWT | Toàn bộ access log của một phòng |
+| POST | `/admin/smartlock/codes/revoke` | host JWT | Host thu hồi mã thủ công |
+| GET | `/internal/devices/:id/status` | service auth | Room Service kiểm tra sức khỏe thiết bị |
 
-### 10.3 Service-to-Service Communication
+### 10.3 Giao tiếp Service-to-Service
 
 ```mermaid
 flowchart LR
     subgraph RoomService[Room Service]
-        RS1[rooms table<br/>smartlock_device_id]
-        RS2[properties table<br/>is_automated]
+        RS1[bảng rooms<br/>smartlock_device_id]
+        RS2[bảng properties<br/>is_automated]
     end
 
     subgraph BookingService[Booking Service]
-        BS1[smartlock_codes table<br/>code_encrypted]
+        BS1[bảng smartlock_codes<br/>code_encrypted]
         BS2[smartlock_access_logs]
         BS3[Smartlock Adapter]
     end
 
-    RS1 -->|device_id via event| BS1
-    RS2 -->|is_automated via event| BS1
+    RS1 -->|device_id qua event| BS1
+    RS2 -->|is_automated qua event| BS1
     BS2 -->|access logs| RS1
     BS3 -->|generate/revoke| SmartlockProvider
 ```
 
-Data sharing via events:
-- `BOOKING_CONFIRMED` event includes `smartlock_device_id` from Room Service's event payload
-- Booking Service stores `device_id` locally (not as FK — eventual consistency)
-- Access logs are shared back via `SMARTLOCK_ACCESS_LOGGED` event for Room Service audit
+Chia sẻ dữ liệu qua event:
+- Event `BOOKING_CONFIRMED` bao gồm `smartlock_device_id` từ event payload của Room Service
+- Booking Service lưu `device_id` cục bộ (không phải FK — eventual consistency)
+- Access logs được chia sẻ lại qua event `SMARTLOCK_ACCESS_LOGGED` cho audit của Room Service
 
 ---
 
-## 11. Edge Cases
+## 11. Các trường hợp đặc biệt
 
-### 11.1 Guest arrives before valid_from
-- Display countdown timer: "Check-in opens in X hours"
-- App sends reminder notification at `valid_from - 30 minutes`
-- BLE unlock is also blocked — smartlock validates time window
+### 11.1 Khách đến trước valid_from
+- Hiển thị đồng hồ đếm ngược: "Check-in mở sau X giờ"
+- App gửi thông báo nhắc nhở tại `valid_from - 30 phút`
+- Mở khóa BLE cũng bị chặn — smartlock xác thực khung thời gian
 
-### 11.2 Guest loses phone before check-in
-- Guest contacts host via in-app chat
-- Host can generate a one-time emergency code from admin panel
-- Emergency code is logged with `event_type = MANUAL_OVERRIDE`
-- Emergency code is separate from the primary code — both can coexist
+### 11.2 Khách làm mất điện thoại trước check-in
+- Khách liên hệ host qua chat trong app
+- Host có thể tạo mã khẩn cấp dùng một lần từ admin panel
+- Mã khẩn cấp được log với `event_type = MANUAL_OVERRIDE`
+- Mã khẩn cấp tách biệt với mã chính — cả hai có thể cùng tồn tại
 
-### 11.3 Guest tries to extend stay
-- If booking is extended, Booking Service calls Smartlock Provider to extend code validity
-- `valid_until` is updated to new checkout time + buffer
-- Guest receives push notification: "Your access has been extended"
+### 11.3 Khách muốn gia hạn thời gian ở
+- Nếu booking được gia hạn, Booking Service gọi Smartlock Provider để gia hạn hiệu lực mã
+- `valid_until` được cập nhật thành checkout time mới + buffer
+- Khách nhận push notification: "Quyền truy cập của bạn đã được gia hạn"
 
-### 11.4 Multiple guests on same booking
-- One master code is generated per booking
-- Code works for all guests on the same booking
-- Access logs capture which device_id unlocked (guests' devices differ)
+### 11.4 Nhiều khách trên cùng một booking
+- Một master code được tạo cho mỗi booking
+- Mã hoạt động cho tất cả khách trong cùng booking
+- Access log ghi lại device_id nào đã mở khóa (thiết bị của các khách khác nhau)
 
-### 11.5 Smartlock offline during checkout
-- If revocation API call fails, retry with exponential backoff (1s, 2s, 4s, 8s, 16s)
-- After 5 failures, log to DLQ and alert host
-- Physical fallback: host receives notification and can manually disable code from provider's app
+### 11.5 Smartlock offline trong khi checkout
+- Nếu revoke API call thất bại, retry với exponential backoff (1s, 2s, 4s, 8s, 16s)
+- Sau 5 lần thất bại, log vào DLQ và cảnh báo host
+- Dự phòng vật lý: host nhận thông báo và có thể vô hiệu hóa mã thủ công từ app của provider
 
 ---
 
-*Generated: 2026-05-27 — Homi 1.0 Auto Check-in Flow Design*
+*Ngày tạo: 2026-05-27 — Thiết kế Luồng Tự Động Check-in Homi 1.0*
