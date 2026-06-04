@@ -392,6 +392,52 @@ async function reopenRoom(roomId: string, reason: string): Promise<Result> {
 
 ---
 
+## 4b. Guard `OPEN/AVAILABLE -> CLOSED` và 3 mức đóng phòng
+
+> Tham chiếu spec: [docs/superpowers/specs/2026-06-04-room-service-availability-access-design.md](../superpowers/specs/2026-06-04-room-service-availability-access-design.md), mục 4.
+
+### Mục tiêu
+
+Ngăn thao tác vận hành thủ công phá vỡ quyền đã được giữ/xác lập cho khách. Không đóng phòng nếu việc đó có thể làm mất quyền sử dụng phòng của:
+- booking `PENDING_PAYMENT`
+- slot có `on_hold_units > 0` chồng lấn khoảng đóng
+- booking `CONFIRMED`
+- khách đang `CHECKED_IN`
+- vòng đời turnover chưa kết thúc
+
+### 5 guard bắt buộc
+
+| # | Guard | Điều kiện fail | Mã lỗi đề xuất |
+|---|-------|----------------|-----------------|
+| 1 | Không có `on_hold_units` chồng lấn khoảng đóng | `on_hold_units > 0` ở slot/date ánh xạ | `ROOM_CLOSE_REJECTED_PENDING_HOLD_EXISTS` |
+| 2 | Không có booking `PENDING_PAYMENT` chưa hết hạn | còn booking trong payment window | `ROOM_CLOSE_REJECTED_PENDING_PAYMENT` |
+| 3 | Không có booking `CONFIRMED` chồng lấn | có `CONFIRMED` chồng khoảng | `ROOM_CLOSE_REJECTED_CONFIRMED_OVERLAP` |
+| 4 | Không có `CHECKED_IN` / turnover đang chạy | có khách ở hoặc turnover chưa xong | `ROOM_CLOSE_REJECTED_ACTIVE_STAY` |
+| 5 | Final check trong transaction/lock | phát hiện race với payment/booking | `ROOM_CLOSE_RACE_DETECTED` (retry) |
+
+Guard 1 chỉ chặn khi `on_hold_units` ánh xạ đúng slot/khoảng thời gian mà thao tác đóng nhắm tới, không phải mọi `on_hold_units` của phòng.
+
+### 3 mức đóng phòng
+
+| Mức | Khi nào dùng | Cách xử lý |
+|-----|--------------|------------|
+| `IMMEDIATE` | Tất cả 5 guard pass | Update `rooms.status` + `room_availability.status` ngay |
+| `SCHEDULED` | Còn booking/hold hợp lệ | Tạo `room_status_change_requests` với `effective_after_booking_id` hoặc `effective_from_datetime`; hệ thống tự apply khi đến hạn |
+| `EMERGENCY_OVERRIDE` | Lý do an toàn/pháp lý/sự cố nghiêm trọng | Admin override, **phải** mở workflow hậu quả: refund/đổi phòng/dispute, audit log đầy đủ |
+
+### Khác biệt DAILY vs HOURLY
+
+- `DAILY`: guard kiểm tra theo khoảng ngày lưu trú.
+- `HOURLY`: guard **phải** kiểm tra chồng lấn ở mức `datetime`. Không đủ nếu chỉ check theo `date`.
+
+### Bất biến cần ghi nhận
+
+> Nếu tồn tại `PENDING_PAYMENT`, `on_hold_units > 0` chồng lấn, `CONFIRMED`, `CHECKED_IN`, hoặc turnover chưa kết thúc trên khoảng thời gian bị ảnh hưởng, hệ thống không được phép chuyển `OPEN/AVAILABLE -> CLOSED` bằng thao tác vận hành thông thường.
+
+> Mọi thao tác `OPEN/AVAILABLE -> CLOSED` phải được xác nhận lại trong final transaction/lock để tránh race với payment webhook hoặc booking confirmation.
+
+---
+
 ## 5. Đồng Bộ Theo Sự Kiện
 
 Khi bất kỳ tầng nào thay đổi, hai tầng còn lại phải được thông báo. Điều này ngăn chặn sự drift (lệch pha).
