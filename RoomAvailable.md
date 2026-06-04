@@ -291,6 +291,53 @@ function subtractMinutes(dateTime: string, minutes: number): string {
 
 ---
 
+## 5b. Rule Availability Sau Checkout — DAILY vs HOURLY
+
+> Tham chiếu spec: [docs/superpowers/specs/2026-06-04-room-service-availability-access-design.md](../superpowers/specs/2026-06-04-room-service-availability-access-design.md), mục 3.
+
+### Quy tắc cho `DAILY`
+
+```text
+CHECKED_IN -> CHECKED_OUT -> CLEANING -> INSPECTING -> AVAILABLE
+```
+
+- Sau khi khách checkout, phòng không được quay lại `AVAILABLE` ngay.
+- Công thức: `available_at = actual_checkout_at + cleaning_buffer + inspecting_buffer`.
+- Phù hợp với thuê theo ngày: ưu tiên chất lượng bàn giao, giảm rủi ro đón khách khi phòng chưa sẵn sàng.
+
+### Quy tắc cho `HOURLY`
+
+Hỗ trợ **back-to-back booking** mà không tạo khoảng trống giả:
+
+- Sau `CHECKED_OUT`, phòng vào turnover window (`CLEANING` / `INSPECTING` / trạng thái nội bộ tương đương).
+- Nếu **không có booking kế tiếp hợp lệ** (booking ở `CONFIRMED` hoặc `PENDING_PAYMENT` còn hiệu lực) chồng lấn khoảng trống, khi turnover xong phòng trở lại `AVAILABLE`.
+- Nếu **đã có booking kế tiếp hợp lệ** nối tiếp, phòng **không được public `AVAILABLE` ở giữa**.
+
+### Ba mốc thời gian cần chuẩn hóa
+
+- `actual_checkout_at` — thời điểm khách thực tế checkout.
+- `turnover_ready_at` — thời điểm dọn dẹp tối thiểu hoàn tất.
+- `public_available_at` — thời điểm slot được mở bán công khai.
+
+Với `DAILY`: `public_available_at = turnover_ready_at` hoặc sau `INSPECTING`.
+Với `HOURLY`:
+- nếu có booking nối tiếp hợp lệ: `public_available_at = null` cho khoảng giữa.
+- nếu không có: `public_available_at = turnover_ready_at`.
+
+### Bất biến quan trọng
+
+> Trong mô hình `HOURLY`, một phòng có thể không có khách bên trong nhưng vẫn không được public `AVAILABLE`, vì nó đang ở turnover window dành cho **booking kế tiếp đã có giữ chỗ hợp lệ** (`CONFIRMED` hoặc `PENDING_PAYMENT` còn nằm trong payment window).
+
+Bất biến này phải phản ánh nhất quán ở:
+- room state
+- inventory query
+- app search result
+- admin UI
+
+Áp dụng hẹp: bất biến chỉ chặn việc public `AVAILABLE` ở khoảng giữa. Nếu khoảng trống thật sự không có booking kế tiếp hợp lệ chồng lấn, phòng vẫn có thể quay lại `AVAILABLE` theo rule.
+
+---
+
 ## 6. 4 Edge Cases Đặc biệt (HOURLY)
 
 ### 6a. Back-to-Back — Không cần đợi buffer
