@@ -1,0 +1,93 @@
+%% File: db/erd/room-service-availability-access.mmd
+%% Muc dich: ERD minh hoa cho access delivery va room status change
+%% Xem them: docs/superpowers/specs/2026-06-04-room-service-availability-access-design.md
+
+erDiagram
+    ROOMS ||--o| ROOM_ACCESS_CONFIGS : "has one config"
+    ROOMS ||--o{ ROOM_STATUS_CHANGE_REQUESTS : "history"
+    ROOM_ACCESS_CONFIGS ||--o{ BOOKING_ACCESS_DELIVERIES : "issues delivery"
+    BOOKINGS ||--|| BOOKING_ACCESS_DELIVERIES : "1-1"
+    BOOKING_ACCESS_DELIVERIES ||--o{ ACCESS_DELIVERY_AUDIT_LOGS : "viewed by"
+    ROOM_STATUS_CHANGE_REQUESTS }o--|| BOOKINGS : "effective_after"
+
+    ROOMS {
+        uuid id PK
+        varchar rental_type
+        varchar access_mode
+        boolean self_checkin_enabled
+        smallint access_visible_lead_minutes
+        varchar smartlock_device_id
+    }
+
+    ROOM_ACCESS_CONFIGS {
+        uuid id PK
+        uuid room_id FK
+        varchar access_mode
+        text source_secret_encrypted
+        varchar source_secret_iv
+        varchar source_secret_tag
+        int source_secret_version
+        text public_checkin_guide
+        text pickup_location_encrypted
+        varchar smartlock_device_id
+        varchar smartlock_provider
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    BOOKINGS {
+        uuid id PK
+        uuid room_id FK
+        uuid guest_id
+        varchar status
+        date check_in_date
+        time check_in_time
+        date check_out_date
+        time check_out_time
+    }
+
+    BOOKING_ACCESS_DELIVERIES {
+        uuid id PK
+        uuid booking_id FK
+        uuid room_access_config_id FK
+        varchar access_mode
+        text delivery_secret_encrypted
+        varchar delivery_secret_iv
+        varchar delivery_secret_tag
+        int source_secret_version
+        timestamptz visible_from
+        timestamptz visible_until
+        boolean is_revoked
+        timestamptz first_viewed_at
+        int view_count
+    }
+
+    ACCESS_DELIVERY_AUDIT_LOGS {
+        uuid id PK
+        uuid delivery_id FK
+        varchar actor_type
+        uuid actor_id
+        varchar action
+        varchar result
+        inet ip_address
+        text user_agent
+        timestamptz occurred_at
+        jsonb metadata
+    }
+
+    ROOM_STATUS_CHANGE_REQUESTS {
+        uuid id PK
+        uuid room_id FK
+        uuid requested_by
+        varchar request_type
+        varchar from_status
+        varchar to_status
+        text reason
+        uuid effective_after_booking_id FK
+        timestamptz effective_from_datetime
+        varchar override_reason_code
+        boolean override_workflow_opened
+        varchar status
+        timestamptz executed_at
+        text failure_reason
+    }
