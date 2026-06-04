@@ -2156,3 +2156,45 @@ flowchart LR
 ---
 
 *Ngày tạo: 2026-05-21 — Thiết kế Database Room Service Homi 1.0*
+
+## Phụ lục A — State Diagram: HOURLY Turnover Window
+
+> Mục đích: minh họa bất biến "không public AVAILABLE khi đã có booking kế tiếp hợp lệ".
+
+```mermaid
+stateDiagram-v2
+    [*] --> CHECKED_IN: Booking A start
+    CHECKED_IN --> CHECKED_OUT: A checkout
+    CHECKED_OUT --> TURNOVER_INTERNAL: cleaning/inspecting
+
+    state "Có booking B nối tiếp hợp lệ?" as Decision1
+
+    TURNOVER_INTERNAL --> Decision1
+    Decision1 --> READY_FOR_NEXT_BOOKING: có (CONFIRMED/PENDING_PAYMENT còn hiệu lực)
+    Decision1 --> AVAILABLE: không
+    READY_FOR_NEXT_BOOKING --> CHECKED_IN: B bắt đầu
+    AVAILABLE --> CHECKED_IN: walk-in B
+```
+
+## Phụ lục B — Flowchart: 3 mức đóng phòng
+
+```mermaid
+flowchart TD
+    Start([Host/Admin yêu cầu đóng phòng]) --> PreCheck{5 guard pre-check pass?}
+
+    PreCheck -- có guard fail --> ImmediateDenied[Từ chối<br/>trả mã lỗi tương ứng]
+    ImmediateDenied --> End1([Kết thúc])
+
+    PreCheck -- pass --> Choice{Chọn mức đóng}
+
+    Choice -- IMMEDIATE --> ImmediateOK[Update rooms.status +<br/>room_availability.status<br/>trong final transaction/lock]
+    ImmediateOK --> End2([Kết thúc])
+
+    Choice -- SCHEDULED --> Scheduled[Insert room_status_change_requests<br/>effective_after_booking_id<br/>hoặc effective_from_datetime]
+    Scheduled --> CronApply[Cron mỗi 5 phút áp dụng<br/>khi đến hạn + guard pass]
+    CronApply --> End3([Kết thúc])
+
+    Choice -- EMERGENCY_OVERRIDE --> Override[Admin override<br/>+ override_reason_code]
+    Override --> Workflow[Mở workflow hậu quả:<br/>refund/đổi phòng/dispute<br/>+ audit log]
+    Workflow --> End4([Kết thúc])
+```
