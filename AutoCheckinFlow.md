@@ -169,6 +169,81 @@ sequenceDiagram
 
 ---
 
+## 2b. Mô hình domain: `access_mode` và `self_checkin_enabled`
+
+> Tham chiếu spec: [docs/superpowers/specs/2026-06-04-room-service-availability-access-design.md](../superpowers/specs/2026-06-04-room-service-availability-access-design.md), mục 2 và mục 5.
+
+### 3 trục độc lập
+
+1. `rental_type` — `DAILY` / `HOURLY` / `BOTH`
+2. `access_mode` — `MANUAL_HANDOVER` / `OWNER_SHARED_CODE` / `SMARTLOCK_DEVICE`
+3. `self_checkin_enabled` — `true` / `false`
+
+3 trục này **không được gộp** vào một enum duy nhất.
+
+### Mapping theo nhóm owner
+
+| Nhóm owner | Access mode khả dụng |
+|------------|---------------------|
+| Truyền thống | `MANUAL_HANDOVER`, `OWNER_SHARED_CODE` |
+| Tự động hóa | `SMARTLOCK_DEVICE` (ưu tiên), fallback `OWNER_SHARED_CODE` |
+
+### Quy tắc domain cốt lõi
+
+1. `self_checkin_enabled = true` không bắt buộc phải có `smartlock_device_id`.
+2. `access_mode = SMARTLOCK_DEVICE` **bắt buộc** có `smartlock_device_id`.
+3. `access_mode = OWNER_SHARED_CODE` thì app chỉ phân phối thông tin do owner cung cấp, không sinh mã động.
+4. `rental_type` và `access_mode` là hai trục độc lập.
+
+### Bảo mật theo `access_mode`
+
+#### `SMARTLOCK_DEVICE`
+
+- `code_plaintext` không được lưu trong DB.
+- `MASTER_ENCRYPTION_KEY` chỉ nằm trong KMS/Vault.
+- `smartlock_device_id` không lộ trong API client-facing.
+- Mã có `valid_from` / `valid_until`, phải revoke được khi checkout/cancel/hết hạn.
+- Mọi event mở khóa ghi log cho audit và dispute.
+
+#### `OWNER_SHARED_CODE`
+
+Dù không phải mã động, thông tin này vẫn là secret vận hành:
+
+1. Không lưu plaintext ở trường mô tả công khai của room/property.
+2. Lưu trong bảng `room_access_configs` (source) và `booking_access_deliveries` (delivery).
+3. Mã hóa at rest bằng application-level encryption hoặc KMS-backed envelope encryption.
+4. Chỉ giải mã và trả về cho đúng guest, đúng booking, đúng cửa sổ thời gian.
+5. Mọi lần xem phải có audit log trong `access_delivery_audit_logs`.
+6. Owner được rotate secret mà không sửa lịch sử booking cũ.
+
+### Phân biệt source secret và delivery secret
+
+- **Source secret**: thông tin owner cấu hình ở cấp room/property (mã lockbox mặc định, hướng dẫn lấy chìa...).
+- **Delivery secret**: snapshot thực tế phát hành cho 1 booking cụ thể.
+
+Tách hai lớp giúp:
+- rotate source mà không phá audit của booking cũ.
+- biết chính xác guest nào đã xem thông tin nào, lúc nào.
+
+### Cửa sổ hiển thị
+
+Mặc định theo `access_mode` + owner override trong khoảng `[0, 24h]`:
+
+- Mặc định `SMARTLOCK_DEVICE` / `OWNER_SHARED_CODE`: `60 phút trước check-in`.
+- Mỗi phòng có `access_visible_lead_minutes` (nullable). `null` = dùng mặc định; có giá trị = dùng giá trị đó, **luôn clamp `[0, 1440]`**.
+- Backend validate, từ chối kèm `ACCESS_LEAD_MINUTES_OUT_OF_RANGE` nếu vượt khoảng.
+- Công thức: `visible_from = check_in_at - lead_minutes`; `visible_until = checkout_at + buffer_minutes`.
+
+### Bất biến bảo mật
+
+> Self check-in không đồng nghĩa với Smartlock.
+
+> `OWNER_SHARED_CODE` là mô hình phân phối secret có kiểm soát, không phải text note công khai của phòng.
+
+> `SMARTLOCK_DEVICE` và `OWNER_SHARED_CODE` phải có cơ chế lưu trữ, hiển thị, audit, và rotation riêng.
+
+---
+
 ## 3. Schema Database — Booking Service
 
 ### 3.1 Bảng `smartlock_codes`
