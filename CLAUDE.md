@@ -197,3 +197,9 @@ Xử lý dựa trên kết quả thanh toán thực tế từ khách hàng.
 1.  **Chống tắc nghẽn (Không Bottleneck):** DB không bao giờ bị khóa quá 0.1 giây. Hệ thống chạy cực kỳ mượt mà ngay cả khi lưu lượng truy cập cao.
 2.  **Chính xác (Nhất quán):** Nhờ `SELECT FOR UPDATE` ngắn hạn ở Giai đoạn 1, số lượng phòng được kiểm soát chặt chẽ, đảm bảo không bán quá số phòng (Overbooking).
 3.  **Tối ưu Tài nguyên:** Server của bạn có thể xử lý hàng trăm khách hàng cùng lúc vì không phải "gánh" các kết nối DB bị giữ quá lâu.
+
+---
+
+## Tài liệu bổ sung
+
+- [Spec bổ sung: Availability theo giờ, Guard đóng phòng, Access Delivery](docs/superpowers/specs/2026-06-04-room-service-availability-access-design.md)
