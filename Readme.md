@@ -9,6 +9,7 @@
 3. [Khuyến nghị Công nghệ cho NestJS](#3-khuyến-nghị-công-nghệ-cho-nestjs)
 4. [Auto Check-in Flow với Smart Locks](#4-auto-check-in-flow-với-smart-locks)
 5. [Dispute Control Mechanisms](#5-dispute-control-mechanisms)
+6. [Taxonomy & Tiện nghi (Amenity System)](#6-taxonomy--tiện-nghi-amenity-system)
 
 ---
 
@@ -58,7 +59,7 @@ Chuẩn hóa phân loại phòng trong một property. Cho phép gom nhóm tiệ
 | `id` | `UUID` | PK | Định danh duy nhất của loại phòng. |
 | `property_id` | `UUID` | FK → `properties(id)` | Property cha. Mỗi room_type thuộc về một property. |
 | `name` | `VARCHAR(100)` | NOT NULL | Tên loại phòng hiển thị cho khách (VD: "Deluxe Studio", "Ocean View Suite", "Standard Twin"). |
-| `amenities` | `TEXT[]` (PostgreSQL array) | NULLABLE | Mảng từ khóa tiện nghi. Dùng native `TEXT[]` của PostgreSQL thay vì bảng trung gian nhiều-nhiều — đơn giản hơn, query nhanh hơn (`WHERE 'Wifi' = ANY(amenities)`), và tránh JOIN phức tạp cho danh sách tương đối tĩnh. |
+| `amenities` | `TEXT[]` (PostgreSQL array) | NULLABLE | **[Deprecated — migrated to `room_type_amenities`]** Mảng từ khóa tiện nghi cũ. Dữ liệu đã được migrate sang bảng `room_type_amenities` mới (xem section 1.12). Giữ lại temporarily để backward-compatible trong quá trình migration. |
 | `max_guests` | `SMALLINT` | NOT NULL | Số khách tối đa cho loại phòng này. Enforced tại tầng application khi booking để ngăn over-capacity reservation. |
 
 ---
@@ -171,6 +172,150 @@ Triển khai **Transactional Outbox Pattern** — đảm bảo mọi thay đổi
 
 ---
 
+### 1.9 Bảng `amenity_categories` — Nhóm Tiện nghi
+
+Bảng phân loại cha, nhóm các tiện nghi thành 5 nhóm chính: `room`, `common`, `unique`, `service_building`, `safety_legal`.
+
+| Trường | Kiểu dữ liệu | Ràng buộc | Mô tả kỹ thuật |
+|--------|-------------|-----------|----------------|
+| `id` | `UUID` | PK | Định danh nhóm. |
+| `code` | `VARCHAR(50)` | UNIQUE, NOT NULL | Mã nhóm viết liền: `room`, `common`, `unique`, `service_building`, `safety_legal`. Dùng làm FK logic trong bảng `amenities`. |
+| `name_vi` | `VARCHAR(100)` | NOT NULL | Tên tiếng Việt hiển thị (VD: "Tiện nghi phòng", "An toàn & Pháp lý"). |
+| `name_en` | `VARCHAR(100)` | NOT NULL | Tên tiếng Anh (VD: "Room Amenities", "Safety & Legal"). |
+| `sort_order` | `INT` | NOT NULL, DEFAULT `0` | Thứ tự hiển thị trên UI — nhóm `room` hiển thị đầu tiên, `safety_legal` cuối. |
+| `created_at` | `TIMESTAMPTZ` | DEFAULT `now()` | Timestamp tạo. |
+
+---
+
+### 1.10 Bảng `amenities` — Từ điển Tiện nghi chuẩn hóa
+
+Bảng dictionary chứa toàn bộ 34 tiện nghi được chuẩn hóa. Mỗi tiện nghi có metadata rõ ràng cho cả backend, frontend, và sync OTA. **Đây là bảng bất biến (append-only)** — chỉ thêm mới, không sửa code đã có.
+
+| Trường | Kiểu dữ liệu | Ràng buộc | Mô tả kỹ thuật |
+|--------|-------------|-----------|----------------|
+| `id` | `UUID` | PK | Định danh tiện nghi. |
+| `amenity_code` | `VARCHAR(100)` | UNIQUE, NOT NULL | Mã tiện nghi snake_case duy nhất (VD: `wifi_available`, `bed_type`, `self_check_in_method`). **Code là chuẩn** — không bao giờ đổi sau khi tạo. |
+| `category_id` | `UUID` | FK → `amenity_categories(id)`, NOT NULL | Nhóm tiện nghi cha. |
+| `scope` | `ENUM('room_type', 'property', 'building')` | NOT NULL | Cấp áp dụng. `room_type` = tiện nghi gắn với loại phòng cụ thể (VD: `bed_type`, `bathtub_or_jacuzzi`). `property` = áp dụng cho toàn property (VD: `wifi_available`, `parking`). `building` = tiện ích tòa nhà (VD: `gym`, `shared_pool`). |
+| `value_kind` | `ENUM('boolean', 'enum', 'number', 'text')` | NOT NULL | Kiểu dữ liệu giá trị. `boolean` cho true/false đơn giản. `enum` khi có nhiều trạng thái (VD: `bed_type` ∈ {single, queen, king}). `number` cho số lượng. `text` chỉ dùng khi thật sự cần (VD: special instructions). |
+| `allowed_values` | `JSONB` | NULLABLE | Mảng giá trị hợp lệ cho kiểu enum. VD: `["single", "double", "queen", "king", "sofa_bed"]` cho `bed_type`. NULL cho boolean. |
+| `display_label_vn` | `VARCHAR(100)` | NOT NULL | Nhãn hiển thị tiếng Việt trên UI (VD: "Wi‑Fi", "Giường", "Gửi xe"). |
+| `short_desc_vn` | `VARCHAR(255)` | NULLABLE | Mô tả ngắn 1 câu tiếng Việt. Dùng cho tooltip. |
+| `ui_priority` | `ENUM('high', 'medium', 'low')` | NOT NULL | Ưu tiên hiển thị. `high` = hiện trên listing card badge (VD: Wi‑Fi, Máy lạnh). `medium` = hiện trong section tiện nghi. `low` = ẩn sau nút "Xem thêm". |
+| `is_filterable` | `BOOLEAN` | NOT NULL, DEFAULT `false` | True = tiện nghi này xuất hiện trong bộ lọc tìm kiếm (VD: Wi‑Fi, Gửi xe, Thú cưng). False = không filter được. |
+| `is_public` | `BOOLEAN` | NOT NULL, DEFAULT `true` | True = hiển thị trên listing công khai. False = dữ liệu private — không hiện trên trang public (VD: door_code, wifi_password). |
+| `requires_disclosure` | `BOOLEAN` | DEFAULT `false` | True = cần công khai chi tiết hơn (VD: CCTV phải disclose vị trí camera). |
+| `icon_key` | `VARCHAR(50)` | NULLABLE | Key map với icon set của frontend (VD: `icon-wifi`, `icon-parking`). |
+| `sort_order` | `INT` | DEFAULT `0` | Thứ tự hiển thị trong nhóm. |
+| `external_mapping` | `JSONB` | NULLABLE | Mapping mã tiện nghi sang OTA/channel manager (VD: `{"airbnb": "amenity_4", "booking": "facility_wifi"}`). Đồng bộ khi push lên OTA. |
+| `created_at` | `TIMESTAMPTZ` | DEFAULT `now()` | |
+| `deleted_at` | `TIMESTAMPTZ` | NULLABLE | Soft delete. |
+
+**5 nhóm tiện nghi và 34 mã tiện nghi:**
+
+| Nhóm | Scope mặc định | Số lượng | Ví dụ |
+|------|---------------|----------|-------|
+| `room` (Tiện nghi phòng) | `room_type` | 7 | `bed_type`, `private_bathroom`, `air_conditioning`, `smart_tv`, `work_desk`, `minibar_fridge`, `kitchenette` |
+| `common` (Phổ biến) | `property` | 8 | `wifi_available`, `wifi_quality`, `parking`, `elevator`, `breakfast_option`, `laundry_option`, `pet_friendly`, `accessibility_step_free_entry` |
+| `unique` (Độc đáo) | `room_type` | 6 | `bathtub_or_jacuzzi`, `balcony_view`, `projector`, `themed_room`, `gaming_console`, `private_plunge_pool` |
+| `service_building` (Dịch vụ & Tòa nhà) | `property` | 7 | `reception_24h`, `housekeeping`, `luggage_storage`, `airport_pickup`, `gym`, `shared_pool`, `coworking_space` |
+| `safety_legal` (An toàn & Pháp lý) | `property`/`room_type` | 8 | `smoke_detector`, `fire_extinguisher`, `first_aid_kit`, `self_check_in_method`, `cctv_common_areas_disclosed`, `id_required_at_checkin`, `invoice_available`, `emergency_contact_available` |
+
+---
+
+### 1.11 Bảng `property_amenities` — Giá trị Tiện nghi cấp Property
+
+Lưu giá trị tiện nghi thực tế tại cấp property. Mỗi tiện nghi chỉ có **một bản ghi** per property — enforced bằng UNIQUE constraint.
+
+| Trường | Kiểu dữ liệu | Ràng buộc | Mô tả kỹ thuật |
+|--------|-------------|-----------|----------------|
+| `id` | `UUID` | PK | |
+| `property_id` | `UUID` | FK → `properties(id)`, NOT NULL | Property sở hữu. |
+| `amenity_id` | `UUID` | FK → `amenities(id)`, NOT NULL | Tiện nghi áp dụng. |
+| `bool_value` | `BOOLEAN` | NULLABLE | Giá trị boolean (VD: `wifi_available = true`). Chỉ điền khi `amenities.value_kind = 'boolean'`. |
+| `enum_value` | `VARCHAR(100)` | NULLABLE | Giá trị enum (VD: `parking = 'motorbike_free'`). Phải nằm trong `amenities.allowed_values`. |
+| `numeric_value` | `NUMERIC` | NULLABLE | Giá trị số. |
+| `text_value` | `TEXT` | NULLABLE | Giá trị text (chỉ dùng cho private data). |
+| `visibility` | `ENUM('public', 'private', 'staff_only')` | NOT NULL, DEFAULT `'public'` | Mức hiển thị. `public` = listing page. `private` = chỉ sau booking. `staff_only` = internal. |
+| `verified_at` | `TIMESTAMPTZ` | NULLABLE | Thời điểm xác minh (VD: Host upload ảnh chứng minh có gym). NULL = chưa xác minh. |
+| `source_platform` | `ENUM('homi', 'airbnb', 'booking', 'agoda', 'manual')` | NULLABLE | Nguồn dữ liệu — dùng khi sync từ OTA hoặc nhập thủ công. |
+| `evidence_url` | `TEXT` | NULLABLE | URL ảnh/chứng cứ nội bộ. Dùng cho QC và dispute resolution. |
+| `created_at` | `TIMESTAMPTZ` | DEFAULT `now()` | |
+
+```sql
+-- Ràng buộc duy nhất: mỗi tiện nghi chỉ 1 giá trị per property
+UNIQUE (property_id, amenity_id);
+
+-- Ràng buộc: chỉ 1 trong 4 value field được điền
+ALTER TABLE property_amenities ADD CONSTRAINT chk_single_value
+    CHECK (
+        (bool_value IS NOT NULL)::int
+        + (enum_value IS NOT NULL)::int
+        + (numeric_value IS NOT NULL)::int
+        + (text_value IS NOT NULL)::int = 1
+    );
+```
+
+---
+
+### 1.12 Bảng `room_type_amenities` — Giá trị Tiện nghi cấp Phòng
+
+Tương tự `property_amenities` nhưng áp dụng cho từng loại phòng cụ thể. Cho phép tiện nghi giống nhau có giá trị khác nhau giữa các loại phòng.
+
+| Trường | Kiểu dữ liệu | Ràng buộc | Mô tả kỹ thuật |
+|--------|-------------|-----------|----------------|
+| `id` | `UUID` | PK | |
+| `room_type_id` | `UUID` | FK → `room_types(id)`, NOT NULL | Loại phòng sở hữu. |
+| `amenity_id` | `UUID` | FK → `amenities(id)`, NOT NULL | Tiện nghi áp dụng. |
+| `bool_value` | `BOOLEAN` | NULLABLE | Giá trị boolean. |
+| `enum_value` | `VARCHAR(100)` | NULLABLE | Giá trị enum. |
+| `numeric_value` | `NUMERIC` | NULLABLE | Giá trị số. |
+| `text_value` | `TEXT` | NULLABLE | Giá trị text. |
+| `visibility` | `ENUM('public', 'private', 'staff_only')` | NOT NULL, DEFAULT `'public'` | Mức hiển thị. |
+| `verified_at` | `TIMESTAMPTZ` | NULLABLE | Thời điểm xác minh. |
+| `source_platform` | `ENUM('homi', 'airbnb', 'booking', 'agoda', 'manual')` | NULLABLE | Nguồn dữ liệu. |
+| `evidence_url` | `TEXT` | NULLABLE | Link minh chứng. |
+| `created_at` | `TIMESTAMPTZ` | DEFAULT `now()` | |
+
+```sql
+UNIQUE (room_type_id, amenity_id);
+```
+
+**Ví dụ data mẫu:**
+
+```sql
+-- Property có Wi-Fi nhanh, parking xe máy miễn phí, thang máy
+INSERT INTO property_amenities (property_id, amenity_id, bool_value, visibility)
+SELECT p.id, a.id, true, 'public'
+FROM properties p, amenities a
+WHERE a.amenity_code IN ('wifi_available', 'elevator')
+  AND p.id = :property_id;
+
+INSERT INTO property_amenities (property_id, amenity_id, enum_value, visibility)
+SELECT p.id, a.id, 'motorbike_free', 'public'
+FROM properties p, amenities a
+WHERE a.amenity_code = 'parking'
+  AND p.id = :property_id;
+
+-- Deluxe Studio có giường Queen, phòng tắm riêng, Jacuzzi
+INSERT INTO room_type_amenities (room_type_id, amenity_id, enum_value, visibility)
+SELECT rt.id, a.id, 'queen', 'public'
+FROM room_types rt, amenities a
+WHERE a.amenity_code = 'bed_type' AND rt.id = :room_type_id;
+
+INSERT INTO room_type_amenities (room_type_id, amenity_id, bool_value, visibility)
+SELECT rt.id, a.id, true, 'public'
+FROM room_types rt, amenities a
+WHERE a.amenity_code = 'private_bathroom' AND rt.id = :room_type_id;
+
+INSERT INTO room_type_amenities (room_type_id, amenity_id, enum_value, visibility)
+SELECT rt.id, a.id, 'jacuzzi', 'public'
+FROM room_types rt, amenities a
+WHERE a.amenity_code = 'bathtub_or_jacuzzi' AND rt.id = :room_type_id;
+```
+
+---
+
 ## 2. Kiến trúc Microservice & Cải tiến Hệ thống
 
 ### 2.1 Phân tích Kiến trúc Microservice
@@ -191,7 +336,11 @@ Room Service (PostgreSQL riêng)
   ├── room_media          (hình ảnh/video)
   ├── room_availability   (tồn kho)
   ├── room_slot_bookings  (projection nội bộ)
-  └── room_booking_events (outbox)
+  ├── room_booking_events (outbox)
+  ├── amenity_categories  (nhóm tiện nghi)
+  ├── amenities           (từ điển tiện nghi chuẩn hóa)
+  ├── property_amenities  (giá trị tiện nghi cấp property)
+  └── room_type_amenities (giá trị tiện nghi cấp phòng)
 
 Booking Service (PostgreSQL riêng)
   ├── bookings                (đơn đặt phòng)
@@ -1617,4 +1766,178 @@ refund_amount = original_amount × fault_rate × evidence_strength
 ---
 
 *Chi tiết đầy đủ: [disputeControlMechanisms.md](./disputeControlMechanisms.md)*
+
+---
+
+## 6. Taxonomy & Tiện nghi (Amenity System)
+
+### 6.1 Tổng quan Thiết kế
+
+Hệ thống tiện nghi Homi 1.0 được thiết kế dựa trên phân tích các nền tảng lớn (Airbnb, Booking.com, Agoda) với các nguyên tắc:
+
+| Nguyên tắc | Mô tả |
+|------------|-------|
+| **Scope** | Mỗi tiện nghi phải gắn scope: `room_type`, `property`, hoặc `building` |
+| **Kiểu dữ liệu** | Mặc định là boolean; dùng enum khi có nhiều trạng thái; chỉ dùng text khi thật sự cần |
+| **Phân loại** | 5 nhóm: `room`, `common`, `unique`, `service_building`, `safety_legal` |
+| **Tính hiển thị** | Có cờ `is_public`; dữ liệu private không hiển thị ở listing |
+| **Tính lọc** | Có cờ `is_filterable` để dev bật/tắt trên search/filter UI |
+| **Ưu tiên UI** | `high`, `medium`, `low` để quyết định badge nào hiện trên card/listing trước |
+
+---
+
+### 6.2 Danh mục 34 Tiện nghi
+
+#### 6.2.1 Tiện nghi phòng (Room Amenities) — 7 tiện nghi
+
+| # | Key | Mô tả | Kiểu | Scope | Ví dụ giá trị |
+|---|-----|-------|------|-------|---------------|
+| 1 | `bed_type` | Loại/size giường chính | enum | room_type | single, double, queen, king, sofa_bed |
+| 2 | `private_bathroom` | Có phòng tắm riêng | boolean | room_type | true |
+| 3 | `air_conditioning` | Điều hòa hoặc làm mát | enum | room_type | aircon, fan_only |
+| 4 | `smart_tv` | TV/Smart TV trong phòng | boolean | room_type | true |
+| 5 | `work_desk` | Bàn làm việc | boolean | room_type | true |
+| 6 | `minibar_fridge` | Tủ lạnh nhỏ/minibar | boolean | room_type | true |
+| 7 | `kitchenette` | Góc bếp hoặc bếp mini | enum | room_type | microwave, kitchenette, full_kitchen |
+
+#### 6.2.2 Tiện nghi phổ biến (Common Amenities) — 8 tiện nghi
+
+| # | Key | Mô tả | Kiểu | Scope | Ví dụ giá trị |
+|---|-----|-------|------|-------|---------------|
+| 1 | `wifi_available` | Có Wi‑Fi | boolean | property | true |
+| 2 | `wifi_quality` | Chất lượng Wi‑Fi | enum | property | basic, good, fast |
+| 3 | `parking` | Hình thức gửi xe | enum | property | none, motorbike_free, motorbike_paid, car_free, car_paid |
+| 4 | `elevator` | Có thang máy | boolean | property | true |
+| 5 | `breakfast_option` | Ăn sáng | enum | property | none, included, paid |
+| 6 | `laundry_option` | Giặt ủi | enum | property | none, self_service, service |
+| 7 | `pet_friendly` | Cho phép thú cưng | boolean | property | true |
+| 8 | `accessibility_step_free_entry` | Lối vào không bậc | boolean | property | true |
+
+#### 6.2.3 Tiện nghi độc đáo (Unique Amenities) — 6 tiện nghi
+
+| # | Key | Mô tả | Kiểu | Scope | Ví dụ giá trị |
+|---|-----|-------|------|-------|---------------|
+| 1 | `bathtub_or_jacuzzi` | Bồn tắm hoặc jacuzzi | enum | room_type | none, bathtub, jacuzzi |
+| 2 | `balcony_view` | Ban công hoặc view | enum | room_type | none, city, river, garden |
+| 3 | `projector` | Máy chiếu | boolean | room_type | true |
+| 4 | `themed_room` | Chủ đề phòng | enum | room_type | none, romantic, minimalist, japanese, vintage |
+| 5 | `gaming_console` | Máy chơi game | boolean | room_type | true |
+| 6 | `private_plunge_pool` | Hồ nhỏ riêng | enum | room_type | none, plunge_pool, private_pool |
+
+#### 6.2.4 Dịch vụ & Tiện ích tòa nhà (Building Services & Utilities) — 7 tiện nghi
+
+| # | Key | Mô tả | Kiểu | Scope | Ví dụ giá trị |
+|---|-----|-------|------|-------|---------------|
+| 1 | `reception_24h` | Lễ tân 24/7 | boolean | property | true |
+| 2 | `housekeeping` | Dọn phòng | enum | property | none, on_request, daily |
+| 3 | `luggage_storage` | Giữ hành lý | boolean | property | true |
+| 4 | `airport_pickup` | Đưa đón sân bay | boolean | property | true |
+| 5 | `gym` | Phòng gym dùng chung | boolean | property | true |
+| 6 | `shared_pool` | Hồ bơi dùng chung | boolean | property | true |
+| 7 | `coworking_space` | Khu làm việc/chung | boolean | property | true |
+
+#### 6.2.5 An toàn & Pháp lý (Safety & Legal) — 8 tiện nghi
+
+| # | Key | Mô tả | Kiểu | Scope | UI Priority |
+|---|-----|-------|------|-------|-------------|
+| 1 | `smoke_detector` | Đầu báo khói | boolean | property | High |
+| 2 | `fire_extinguisher` | Bình chữa cháy | boolean | property | High |
+| 3 | `first_aid_kit` | Bộ sơ cứu | boolean | property | Medium |
+| 4 | `self_check_in_method` | Cách tự check-in | enum | room_type | High |
+| 5 | `cctv_common_areas_disclosed` | Camera khu vực chung (công khai) | boolean | property | Medium |
+| 6 | `id_required_at_checkin` | Yêu cầu CCCD khi check-in | boolean | property | High |
+| 7 | `invoice_available` | Xuất hóa đơn | boolean | property | Medium |
+| 8 | `emergency_contact_available` | Hotline khẩn cấp | boolean | property | High |
+
+---
+
+### 6.3 Quy tắc Lưu trữ: Public vs Private
+
+**Quan trọng:** Airbnb cho biết sau khi đặt chỗ, khách mới xem được check-in time, special instructions, Wi‑Fi password, entry codes. Do đó, **Homi KHÔNG đưa door_code, Wi‑Fi password, house manual vào bảng amenities public**.
+
+| Loại dữ liệu | Lưu ở đâu | Hiển thị khi nào |
+|---------------|-----------|------------------|
+| `wifi_available`, `bed_type`, `parking` | `property_amenities` / `room_type_amenities` (public) | Luôn trên listing |
+| `self_check_in_method` = smartlock | `property_amenities` (public) | Luôn trên listing |
+| Door code, Wi-Fi password | Bảng riêng `checkin_private_details` | Chỉ sau booking CONFIRMED |
+| House rules / manual | Bảng riêng `checkin_private_details` | Chỉ sau booking CONFIRMED |
+
+---
+
+### 6.4 Checklist thu thập Tiện nghi
+
+Trước khi thêm tiện nghi mới, cần kiểm tra:
+
+| Cần kiểm tra | Câu hỏi | Kết quả mong muốn |
+|-------------|---------|-------------------|
+| Xác định scope | Tiện nghi thuộc phòng hay tòa nhà? | Chọn đúng `room_type` hoặc `property` |
+| Chọn mã chuẩn | Đã có `amenity_code` trong dictionary chưa? | Không tạo trùng nghĩa bằng tên khác |
+| Chọn kiểu giá trị | Boolean hay enum? | Không nhập text khi enum đủ |
+| Chứng thực | Có ảnh hoặc nguồn xác nhận? | Lưu `verified_at`, `source_platform`, `evidence_url` |
+| Hiển thị | Hiện trên card listing không? | Gắn `ui_priority` + `is_public` |
+| Cho filter | Người dùng cần lọc trường này? | Gắn `is_filterable = true/false` |
+| Bảo mật | Dữ liệu chỉ lộ sau booking? | Đưa vào `checkin_private_details`, không public |
+
+---
+
+### 6.5 Ví dụ hiển thị trên UI
+
+**Listing card:**
+```
+Wi‑Fi mạnh · Máy lạnh · Phòng tắm riêng · Tự check-in · Gửi xe máy
+```
+
+**Trang chi tiết:**
+```
+Tiện nghi phòng
+  - Giường Queen
+  - Phòng tắm riêng
+  - Smart TV
+
+Tiện nghi phổ biến
+  - Wi‑Fi: Fast
+  - Thang máy
+  - Gửi xe máy miễn phí
+
+Tiện nghi độc đáo
+  - Jacuzzi
+  - Máy chiếu
+
+Dịch vụ & tòa nhà
+  - Lễ tân 24/7
+  - Giữ hành lý
+
+An toàn & pháp lý
+  - Đầu báo khói
+  - Bình chữa cháy
+  - Yêu cầu CCCD khi check-in
+```
+
+---
+
+### 6.6 Sync Tiện nghi lên OTA
+
+Khi push dữ liệu lên OTA qua Channel Manager, tiện nghi được map qua trường `external_mapping` trong bảng `amenities`:
+
+```typescript
+// Ví dụ: map amenity_code sang Airbnb amenity ID
+const airbnbMapping = {
+  wifi_available:     'amenity_4',    // Wifi
+  air_conditioning:   'amenity_5',    // Air conditioning
+  kitchen:            'amenity_8',    // Kitchen
+  pool:               'amenity_18',   // Pool
+  self_check_in:      'amenity_100',  // Self check-in
+  smoke_detector:     'amenity_19',   // Smoke detector
+};
+
+// Sync flow
+function mapAmenitiesToOTA(amenityValues: PropertyAmenity[]) {
+  return amenityValues
+    .filter(a => a.visibility === 'public' && a.amenity.external_mapping)
+    .map(a => ({
+      ota_amenity_id: a.amenity.external_mapping.airbnb,
+      available: a.bool_value ?? (a.enum_value !== 'none'),
+    }));
+}
+```
 

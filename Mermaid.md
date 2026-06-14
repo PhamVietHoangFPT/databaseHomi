@@ -12,6 +12,9 @@ erDiagram
     PROPERTIES ||--o{ ROOM_TYPES : categorizes
     ROOMS ||--o{ ROOM_TYPES : typed_as
     ROOMS ||--o{ ROOM_MEDIA : has_media
+    ROOM_TYPES ||--o{ ROOM_TYPE_AMENITIES : has_amenities
+    PROPERTIES ||--o{ PROPERTY_AMENITIES : has_amenities
+    AMENITY_CATEGORIES ||--o{ AMENITIES : defines
     ROOMS ||--o{ ROOM_AVAILABILITY : tracks_slots
     ROOMS ||--o{ ROOM_SLOT_BOOKINGS : linked_via_events
     ROOMS ||--o{ ROOM_BOOKING_EVENTS : outbox
@@ -51,7 +54,6 @@ erDiagram
         uuid id PK
         uuid property_id FK
         string name
-        string_array amenities
         int max_guests
         timestamp created_at
         timestamp deleted_at
@@ -79,6 +81,65 @@ erDiagram
         string performed_by_type
         string ip_address
         string user_agent
+        timestamp created_at
+    }
+
+    AMENITY_CATEGORIES {
+        uuid id PK
+        string code
+        string name_vi
+        string name_en
+        int sort_order
+        timestamp created_at
+    }
+
+    AMENITIES {
+        uuid id PK
+        string amenity_code
+        string category_code FK
+        string scope
+        string value_kind
+        jsonb allowed_values
+        string display_label_vi
+        string short_desc_vi
+        string ui_priority
+        boolean is_filterable
+        boolean is_public
+        boolean requires_disclosure
+        string icon_key
+        int sort_order
+        jsonb external_mapping
+        timestamp created_at
+        timestamp deleted_at
+    }
+
+    PROPERTY_AMENITIES {
+        uuid id PK
+        uuid property_id FK
+        uuid amenity_id FK
+        boolean bool_value
+        string enum_value
+        numeric numeric_value
+        string text_value
+        string visibility
+        timestamptz verified_at
+        string source_platform
+        string evidence_url
+        timestamp created_at
+    }
+
+    ROOM_TYPE_AMENITIES {
+        uuid id PK
+        uuid room_type_id FK
+        uuid amenity_id FK
+        boolean bool_value
+        string enum_value
+        numeric numeric_value
+        string text_value
+        string visibility
+        timestamptz verified_at
+        string source_platform
+        string evidence_url
         timestamp created_at
     }
 
@@ -1160,6 +1221,10 @@ flowchart TB
         T6b[create_room_requests]
         T7b[room_slot_bookings]
         T8b[room_booking_events]
+        T9b[amenity_categories]
+        T10b[amenities]
+        T11b[property_amenities]
+        T12b[room_type_amenities]
     end
 
     subgraph BookingService[Booking Service]
@@ -1194,7 +1259,7 @@ flowchart TB
     Payment --> BS_API
     Smartlock --> BS_Smartlock
 
-    RS_API --> T1b & T2b & T3b & T4b & T5b & T6b & T7b & T8b
+    RS_API --> T1b & T2b & T3b & T4b & T5b & T6b & T7b & T8b & T9b & T10b & T11b & T12b
     RS_Outbox -.->|publish| T1 & T2 & T6
     RS_Outbox -.->|consume| T3 & T4 & T5
 
@@ -1256,7 +1321,7 @@ ORDER BY date, start_time;
 ```mermaid
 flowchart LR
     subgraph S1[Room Service]
-        D1[room_availability<br/>room_slot_bookings<br/>room_booking_events]
+        D1[room_availability<br/>room_slot_bookings<br/>room_booking_events<br/>amenities<br/>amenity_categories<br/>property_amenities<br/>room_type_amenities]
     end
     subgraph S2[Booking Service]
         D2[bookings<br/>smartlock_codes<br/>booking_status_events]
@@ -1294,6 +1359,9 @@ flowchart LR
 | smartlock_codes | Booking Service | Smartlock Provider - App |
 | accounts | User Service | Room Service - Booking Service chỉ đọc UUID |
 | properties | Room Service | OTA Sync đọc |
+| amenities | Room Service | OTA Sync, Booking Service, Frontend chỉ đọc |
+| property_amenities | Room Service | OTA Sync, Frontend chỉ đọc |
+| room_type_amenities | Room Service | OTA Sync, Frontend chỉ đọc |
 
 ### 10d. Saga Pattern
 
@@ -2197,4 +2265,156 @@ flowchart TD
     Choice -- EMERGENCY_OVERRIDE --> Override[Admin override<br/>+ override_reason_code]
     Override --> Workflow[Mở workflow hậu quả:<br/>refund/đổi phòng/dispute<br/>+ audit log]
     Workflow --> End4([Kết thúc])
+```
+
+---
+
+## Phụ lục C — Hệ thống Tiện nghi (Amenity Taxonomy)
+
+### C1. ERD Amenity System
+
+```mermaid
+erDiagram
+    AMENITY_CATEGORIES ||--o{ AMENITIES : defines
+    AMENITIES ||--o{ PROPERTY_AMENITIES : applies_to_property
+    AMENITIES ||--o{ ROOM_TYPE_AMENITIES : applies_to_room_type
+    PROPERTIES ||--o{ PROPERTY_AMENITIES : has_amenities
+    ROOM_TYPES ||--o{ ROOM_TYPE_AMENITIES : has_amenities
+
+    AMENITY_CATEGORIES {
+        uuid id PK
+        string code UK
+        string name_vi
+        string name_en
+        int sort_order
+        timestamp created_at
+    }
+
+    AMENITIES {
+        uuid id PK
+        string amenity_code UK
+        uuid category_id FK
+        string scope
+        string value_kind
+        jsonb allowed_values
+        string display_label_vi
+        string short_desc_vi
+        string ui_priority
+        boolean is_filterable
+        boolean is_public
+        boolean requires_disclosure
+        string icon_key
+        int sort_order
+        jsonb external_mapping
+        timestamp created_at
+        timestamp deleted_at
+    }
+
+    PROPERTY_AMENITIES {
+        uuid id PK
+        uuid property_id FK
+        uuid amenity_id FK
+        boolean bool_value
+        string enum_value
+        numeric numeric_value
+        string text_value
+        string visibility
+        timestamptz verified_at
+        string source_platform
+        string evidence_url
+        timestamp created_at
+    }
+
+    ROOM_TYPE_AMENITIES {
+        uuid id PK
+        uuid room_type_id FK
+        uuid amenity_id FK
+        boolean bool_value
+        string enum_value
+        numeric numeric_value
+        string text_value
+        string visibility
+        timestamptz verified_at
+        string source_platform
+        string evidence_url
+        timestamp created_at
+    }
+```
+
+### C2. Scope Phân cấp Tiện nghi
+
+```mermaid
+flowchart TD
+    subgraph Scope["Scope levels"]
+        B[Building / Property<br/>wifi, parking, elevator, reception_24h]
+        P[Property-level<br/>breakfast_option, pet_friendly, gym]
+        R[Room Type<br/>bed_type, bathtub, themed_room, work_desk]
+    end
+
+    subgraph ValueKinds["Value kinds"]
+        BV[boolean: wifi_available, pet_friendly]
+        EV[enum: bed_type, parking, balcony_view]
+        NV[number: max_guests_override]
+        TV[text: special_instructions — private only]
+    end
+
+    subgraph Visibility["Visibility levels"]
+        PU[public: hiển thị trên listing]
+        PR[private: chỉ hiện sau booking]
+        ST[staff_only: chỉ internal]
+    end
+
+    B --> BV
+    P --> EV
+    R --> NV
+    BV --> PU
+    EV --> PR
+```
+
+### C3. Filter & UI Priority Flow
+
+```mermaid
+flowchart TD
+    A[Amenity value saved to room_type_amenities] --> B{is_public?}
+    B -->|false| C[Never shown on listing]
+    B -->|true| D{is_filterable?}
+    D -->|true| E[Appears in search/filter UI]
+    D -->|false| F[Shown on detail page only]
+
+    E --> G{ui_priority?}
+    G -->|high| H[Badge on listing card<br/>e.g. Wi-Fi · Machine lạnh · Jacuzzi]
+    G -->|medium| I[Shown in amenity section]
+    G -->|low| J[Collapsed behind "Xem thêm"]
+
+    H --> K[OTA external_mapping sync]
+    I --> K
+    F --> K
+```
+
+### C4. Data Privacy — Public vs Private
+
+```mermaid
+flowchart TD
+    subgraph Public["Public amenities (listing page)"]
+        PA1[wifi_available, wifi_quality]
+        PA2[bed_type, air_conditioning]
+        PA3[parking, elevator, pet_friendly]
+        PA4[bathtub_or_jacuzzi, balcony_view]
+        PA5[smoke_detector, fire_extinguisher]
+    end
+
+    subgraph Private["Private / Booking-only"]
+        PR1[door_code — check-in instruction]
+        PR2[wi_fi_password]
+        PR3[house_manual — house rules]
+        PR4[self_check_in_method detail]
+    end
+
+    subgraph Storage["Storage rule"]
+        S1[Public → amenities + property/room_type_amenities]
+        S2[Private → checkin_private_details table]
+    end
+
+    Public --> S1
+    Private --> S2
 ```

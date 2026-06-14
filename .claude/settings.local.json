@@ -4,7 +4,12 @@
       "WebSearch",
       "Bash(xxd /tmp/line761.txt)",
       "Bash(python sync_readme.py)",
-      "Bash(rm sync_readme.py)"
+      "Bash(rm sync_readme.py)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git worktree *)",
+      "Bash(git branch *)",
+      "Bash(grep -nE \"^###|^####|^---$\")"
     ]
   }
 }
